@@ -135,29 +135,27 @@ struct DStarLiteNavigator {
 
     void computeShortestPath(Position start) {
         while (!open_.empty()) {
-            while (!open_.empty()) {
-                keyPos top = open_.top();
-                if (!(top.pos.x >= 0 && top.pos.x < width_ && top.pos.y >= 0 && top.pos.y < height_)) {
-                    open_.pop();
-                    continue;
-                }
-                if (!in_open_[idx(top.pos.x, top.pos.y)]) { open_.pop(); continue; }
-                if (top.k == calculateKey(top.pos)) break;
-                open_.pop();
-                push(top.pos);
-            }
-            if (open_.empty()) break;
-
             keyPos top = open_.top();
-            Position u = top.pos;
-            key ku = top.k;
+            open_.pop();
+
+            if (!(top.pos.x >= 0 && top.pos.x < width_ 
+                && top.pos.y >= 0 && top.pos.y < height_))
+                continue;
+            
+            if (!in_open_[idx(top.pos.x, top.pos.y)]) continue;
+            
+            if (top.k != calculateKey(top.pos)) {
+                push(top.pos);
+                continue;
+            }
+
             key kStart = calculateKey(start);
             float gStart   = g_[idx(start.x, start.y)];
             float rhsStart = rhs_[idx(start.x, start.y)];
             bool startConsistent = (gStart == rhsStart);
-            if (!(ku < kStart) && startConsistent) break;
+            if (!(top.k < kStart) && startConsistent) break;
 
-            open_.pop();
+            Position u = top.pos;
             remove(u);
             
             float gu = g_[idx(u.x, u.y)];
