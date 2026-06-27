@@ -12,7 +12,9 @@ struct Position {
 
 struct Cell {
     float absolute_elevation{0.0f};
+    // -pi/2..pi/2
     float slope_dx{0.0f};
+    // -pi/2..pi/2
     float slope_dy{0.0f};
 
     float roughness{0.0f};
@@ -125,6 +127,7 @@ inline bool lineOfSight(const Region& state, int width, int height,
     return true;
 }
 
+// reveals all cells in a disk of randius sensor_range aroung robot
 inline auto defaultScan(float sensor_range) {
     return [sensor_range](Position robot, const Region& state) -> std::vector<Position> {
         std::vector<Position> result;
@@ -138,6 +141,8 @@ inline auto defaultScan(float sensor_range) {
                 if (dx * dx + dy * dy > r2) continue;
 
                 Position t{.x = tx, .y = ty, .direction = 0.0f};
+
+                // skip all cell that cannot be seen from current position
                 if (!lineOfSight(state, state.width, state.height, robot, t)) continue;
                 if (state[tx, ty].is_visited) continue;
 
