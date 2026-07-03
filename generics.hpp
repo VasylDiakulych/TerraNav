@@ -25,7 +25,11 @@ struct Cell {
     float wind_dir{0.0f};
 
     bool is_impassable{false};
-    float final_cost{1.0f};
+    float real_cost{1.0f};
+
+    // Precomputed traversal cost (cost_func_ applied to this cell).
+    // Updated during scan();
+    float computed_cost{1.0f};
 
     bool is_visited{false};
 };
@@ -79,7 +83,7 @@ concept CostFunction = requires (const F& f, const Cell& c) {
 };
 
 inline float defaultCost(const Cell& c) {
-    return c.final_cost
+    return c.real_cost
          + 0.1f * c.roughness
          + 0.05f * std::abs(c.slope_dx)
          + 0.05f * std::abs(c.slope_dy);
