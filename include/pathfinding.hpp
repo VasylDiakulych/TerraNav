@@ -31,8 +31,8 @@ struct DStarLiteNavigator {
                        Heur heuristic = zeroHeuristic)
         : width_(width), height_(height),
           costFunc_(costFunc), probe_(probe), scan_(scan), heuristic_(heuristic) {
-            currentState_.resize(width, height);
-            td::ranges::fill(g_, kInf);
+            currentState_.resize(width_, height_);
+            std::ranges::fill(g_, kInf);
             std::ranges::fill(rhs_, kInf);
             std::ranges::fill(inOpen_, false);
         }
@@ -279,8 +279,8 @@ struct NaiveAStarNavigator {
                        Heur heuristic = zeroHeuristic)
         : width_(width), height_(height),
           costFunc_(costFunc), probe_(probe), scan_(scan), heuristic_(heuristic) {
-            currentState_.resize(width, height);
-            auto N = static_cast<size_t>(width) * height;
+            currentState_.resize(width_, height_);
+            auto N = static_cast<size_t>(width_) * height_;
             
             g_.assign(N, kInf);
             generated_id_.assign(N, 0);
@@ -291,7 +291,7 @@ struct NaiveAStarNavigator {
 
     void reset() {
         initialized_ = false;
-        auto N = static_cast<size_t>(width) * height;
+        auto N = static_cast<size_t>(width_) * height_;
 
         currentSearchId_ = 0;
         g_.assign(N, kInf);
@@ -456,8 +456,8 @@ struct MPAAStarNavigator {
                        Heur heuristic = zeroHeuristic)
         : width_(width), height_(height),
           costFunc_(costFunc), probe_(probe), scan_(scan), heuristic_(heuristic) {
-            currentState_.resize(width, height);
-            auto N = static_cast<size_t>(width) * height;
+            currentState_.resize(width_, height);
+            auto N = static_cast<size_t>(width_) * height_;
             g_.assign(N, kInf);
             h_.assign(N, 0.0f);
             search_.assign(N, 0);
@@ -471,7 +471,7 @@ struct MPAAStarNavigator {
     void reset(){
         initialized_ = false;
         counter_ = 0;
-        auto N = static_cast<size_t>(width) * height;
+        auto N = static_cast<size_t>(width_) * height_;
         g_.assign(N, kInf);
         h_.assign(N, 0.0f);
         search_.assign(N, 0);
