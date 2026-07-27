@@ -4,6 +4,9 @@
 #include <concepts>
 #include <vector>
 #include <cmath>
+#include <limits>
+
+inline constexpr float kInf = std::numeric_limits<float>::infinity();
 
 struct Position {
     int x{0}, y{0};
@@ -12,24 +15,16 @@ struct Position {
 
 struct Cell {
     float absolute_elevation{0.0f};
-    // -pi/2..pi/2
     float slope_dx{0.0f};
-    // -pi/2..pi/2
     float slope_dy{0.0f};
 
     float roughness{0.0f};
     float humidity{0.0f};
 
     float wind_speed{0.0f};
-    // angle 0 -> 2pi
     float wind_dir{0.0f};
 
     bool is_impassable{false};
-    float real_cost{1.0f};
-
-    // Precomputed traversal cost (cost_func_ applied to this cell).
-    // Updated during scan();
-    float computed_cost{1.0f};
 
     bool is_visited{false};
 };
@@ -60,6 +55,7 @@ struct Region{
 template<typename T>
 concept Navigator = requires(T nav, Position start, Position goal  ){
     { nav.replan(start, goal) } -> std::convertible_to<std::vector<Position>>;
+    { nav.reset() } -> std::same_as<void>;
 };
 
 // General heuristic
@@ -78,15 +74,36 @@ inline float euclideanHeuristic(Position a, Position b) {
 
 // Function, that for a given cell returns it's cost
 template<typename F>
-concept CostFunction = requires (const F& f, const Cell& c) {
-    { f(c) } -> std::convertible_to<float>;
+concept CostFunction = requires (const F& f, const Cell& a, const Cell& b, Position pa, Position pb) {
+    { f(a, b, pa, pb) } -> std::convertible_to<float>;
 };
 
-inline float defaultCost(const Cell& c) {
-    return c.real_cost
-         + 0.1f * c.roughness
-         + 0.05f * std::abs(c.slope_dx)
-         + 0.05f * std::abs(c.slope_dy);
+inline float actualCost(const Cell& from, const Cell& to, Position a, Position b) {
+    if (from.is_impassable || to.is_impassable) return kInf;
+
+    float dx = static_cast<float>(b.x - a.x);
+    float dy = static_cast<float>(b.y - a.y);
+    float distance = std::sqrt(dx*dx + dy*dy);
+    if (distance < 1e-6f) return 0.0f;
+
+    float elevationGain = to.absolute_elevation - from.absolute_elevation;
+    float slopeAngle = elevationGain / distance;
+    float slopePenalty = slopeAngle > 0.10f
+        ? (slopeAngle - 0.10f) * (slopeAngle - 0.10f) * 10.0f
+        : 0.0f;
+
+    float avgRoughness = 0.5f * (from.roughness + to.roughness);
+    float avgHumidity = 0.5f * (from.humidity + to.humidity);
+    float roughnessPenalty = avgRoughness * (1.0f + 3.0f * avgHumidity);
+
+    float windX = std::cos(from.wind_dir);
+    float windY = std::sin(from.wind_dir);
+    float moveX = dx / distance;
+    float moveY = dy / distance;
+    float windAlignment = windX*moveX + windY*moveY;
+    float windPenalty = from.wind_speed * (1.0f - windAlignment) * 0.5f;
+
+    return distance * (1.0f + slopePenalty + 2.0f * roughnessPenalty + windPenalty);
 }
 
 template<typename F>

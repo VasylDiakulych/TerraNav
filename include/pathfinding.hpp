@@ -8,8 +8,6 @@
 #include <vector>
 #include "generics.hpp"
 
-inline constexpr float kInf = std::numeric_limits<float>::infinity();
-
 struct Neighbors {
     Position data[8];
     int count = 0;
@@ -29,29 +27,40 @@ template<typename CostFn, typename Probe, typename Heur, typename Scan>
 requires CostFunction<CostFn> && ProbeFunction<Probe> && Heuristic<Heur> && SensorFunction<Scan>
 struct DStarLiteNavigator {
     DStarLiteNavigator(int width, int height,
-                       CostFn cost_func, Probe probe, Scan scan,
+                       CostFn costFunc, Probe probe, Scan scan,
                        Heur heuristic = zeroHeuristic)
         : width_(width), height_(height),
-          cost_func_(cost_func), probe_(probe), scan_(scan), heuristic_(heuristic) {
-            current_state_.resize(width, height);
-            auto N = static_cast<size_t>(width) * height;
-            g_.assign(N, kInf);
-            rhs_.assign(N, kInf);
-            in_open_.assign(N, false);
+          costFunc_(costFunc), probe_(probe), scan_(scan), heuristic_(heuristic) {
+            currentState_.resize(width, height);
+            td::ranges::fill(g_, kInf);
+            std::ranges::fill(rhs_, kInf);
+            std::ranges::fill(inOpen_, false);
         }
 
+    void reset() {
+        initialized_ = false;
+        std::ranges::fill(g_, kInf);
+        std::ranges::fill(rhs_, kInf);
+        std::ranges::fill(inOpen_, false);
+        while (!open_.empty()) open_.pop();
+        km = 0.0f;
+        lastStart_ = Position{};
+        goal_ = Position{};
+        currentState_ = Region{};
+    }
+        
     std::vector<Position> replan(Position start, Position end) {
         if (!initialized_) {
-            last_start_ = start;
+            lastStart_ = start;
             initialize(end);
             scan(start);
             computeShortestPath(start);
             initialized_ = true;
         } else {
-            km += heuristic_(last_start_, start);
+            km += heuristic_(lastStart_, start);
             scan(start);
             computeShortestPath(start);
-            last_start_ = start;
+            lastStart_ = start;
         }
         return reconstructPath(start);
     }
@@ -68,18 +77,18 @@ struct DStarLiteNavigator {
     };
 
     int width_, height_;
-    CostFn cost_func_;
+    CostFn costFunc_;
     Probe probe_;
     Scan scan_;
     Heur heuristic_;
 
-    Region current_state_;
+    Region currentState_;
     std::vector<float> g_, rhs_;
-    std::vector<bool> in_open_;
+    std::vector<bool> inOpen_;
     std::priority_queue<keyPos, std::vector<keyPos>, keyGreater> open_;
 
     float km{0.0f};
-    Position last_start_, goal_;
+    Position lastStart_, goal_;
     bool initialized_{false};
 
     inline int idx(int x, int y) const { return y * width_ + x; }
@@ -97,34 +106,30 @@ struct DStarLiteNavigator {
     }
 
     float edgeCost(Position a, Position b) const {
-        const auto& cellA = current_state_[a.x, a.y];
-        const auto& cellB = current_state_[b.x, b.y];
-        if(cellA.is_impassable || cellB.is_impassable) { return kInf; }
-        float d = (a.x == b.x || a.y == b.y) ? 1.0f : std::sqrt(2.0f);
-        return 0.5f * (cellA.computed_cost + cellB.computed_cost) * d;
+        return costFunc_(currentState_[a.x, a.y], currentState_[b.x, b.y], a, b);
     };
 
     key calculateKey(Position s) const {
         float gVal = g_[idx(s.x, s.y)];
         float rVal = rhs_[idx(s.x, s.y)];
         float m  = std::min(gVal, rVal);
-        return {.k1 = m + heuristic_(last_start_, s) + km, .k2 = m};
+        return {.k1 = m + heuristic_(lastStart_, s) + km, .k2 = m};
     }
 
     void push(Position s) {
         open_.push({.k = calculateKey(s), .pos = s});
-        in_open_[idx(s.x, s.y)] = true;
+        inOpen_[idx(s.x, s.y)] = true;
     }
 
     void remove(Position s) {
-        in_open_[idx(s.x, s.y)] = false;
+        inOpen_[idx(s.x, s.y)] = false;
     }
 
     void initialize(Position end) {
         goal_ = end;
         std::ranges::fill(g_, kInf);
         std::ranges::fill(rhs_, kInf);
-        std::ranges::fill(in_open_, false);
+        std::ranges::fill(inOpen_, false);
         while (!open_.empty()) open_.pop();
         km = 0.0f;
         rhs_[idx(goal_.x, goal_.y)] = 0.0f;
@@ -132,12 +137,11 @@ struct DStarLiteNavigator {
     }
 
     void scan(Position robot){
-        std::vector<Position> dirty = scan_(robot, current_state_);
+        std::vector<Position> dirty = scan_(robot, currentState_);
 
         for (const Position& d : dirty) {
             Cell truth = probe_(d);
-            truth.computed_cost = cost_func_(truth);
-            Cell& cur  = current_state_[d.x, d.y];
+            Cell& cur  = currentState_[d.x, d.y];
             cur = truth;
             cur.is_visited = true;
         }
@@ -165,7 +169,7 @@ struct DStarLiteNavigator {
                 && top.pos.y >= 0 && top.pos.y < height_))
                 continue;
             
-            if (!in_open_[idx(top.pos.x, top.pos.y)]) continue;
+            if (!inOpen_[idx(top.pos.x, top.pos.y)]) continue;
             
             key kNew = calculateKey(top.pos);
             if (top.k < kNew) {
@@ -189,7 +193,7 @@ struct DStarLiteNavigator {
             key kStart = calculateKey(start);
             float gStart   = g_[idx(start.x, start.y)];
             float rhsStart = rhs_[idx(start.x, start.y)];
-            bool startConsistent = (gStart == rhsStart);
+            bool startConsistent = abs(gStart - rhsStart) < 1e-5f;
             if (!(top.k < kStart) && startConsistent) break;
 
             Position u = top.pos;
@@ -226,7 +230,7 @@ struct DStarLiteNavigator {
             }
             rhs_[i] = best;
         }
-        if (in_open_[i]) {
+        if (inOpen_[i]) {
             if (g_[i] == rhs_[i]) {
                 remove(s);
             } else {
@@ -271,11 +275,11 @@ template<typename CostFn, typename Probe, typename Heur, typename Scan>
 requires CostFunction<CostFn> && ProbeFunction<Probe> && Heuristic<Heur> && SensorFunction<Scan>
 struct NaiveAStarNavigator {
     NaiveAStarNavigator(int width, int height,
-                       CostFn cost_func, Probe probe, Scan scan,
+                       CostFn costFunc, Probe probe, Scan scan,
                        Heur heuristic = zeroHeuristic)
         : width_(width), height_(height),
-          cost_func_(cost_func), probe_(probe), scan_(scan), heuristic_(heuristic) {
-            current_state_.resize(width, height);
+          costFunc_(costFunc), probe_(probe), scan_(scan), heuristic_(heuristic) {
+            currentState_.resize(width, height);
             auto N = static_cast<size_t>(width) * height;
             
             g_.assign(N, kInf);
@@ -284,6 +288,20 @@ struct NaiveAStarNavigator {
             cameFrom_.assign(N, {-1, -1});
             open_.reserve(N);
         }
+
+    void reset() {
+        initialized_ = false;
+        auto N = static_cast<size_t>(width) * height;
+
+        currentSearchId_ = 0;
+        g_.assign(N, kInf);
+        generated_id_.assign(N, 0);
+        closed_id_.assign(N, 0);
+        cameFrom_.assign(N, {-1, -1});
+        open_.clear();
+
+        currentState_ = Region{};
+    }
 
     std::vector<Position> replan(Position start, Position end) {
         if (!initialized_) {
@@ -299,17 +317,17 @@ struct NaiveAStarNavigator {
     }
         
     int width_, height_;
-    CostFn cost_func_;
+    CostFn costFunc_;
     Probe probe_;
     Scan scan_;
     Heur heuristic_;
 
-    Region current_state_{};
+    Region currentState_{};
     std::vector<float> g_;
     std::vector<bool> closed_;
     std::vector<Position> cameFrom_;
 
-    int current_search_id_ = 0;
+    int currentSearchId_ = 0;
     std::vector<int> generated_id_; 
     std::vector<int> closed_id_;
 
@@ -344,20 +362,17 @@ struct NaiveAStarNavigator {
     }
 
     float edgeCost(Position a, Position b) const {
-        const auto& cellA = current_state_[a.x, a.y];
-        const auto& cellB = current_state_[b.x, b.y];
-        if(cellA.is_impassable || cellB.is_impassable) { return kInf; }
-        float d = (a.x == b.x || a.y == b.y) ? 1.0f : std::sqrt(2.0f);
-        return 0.5f * (cellA.computed_cost + cellB.computed_cost) * d;
+        const auto& cellA = currentState_[a.x, a.y];
+        const auto& cellB = currentState_[b.x, b.y];
+        return costFunc_(cellA, cellB, a, b);
     }
 
     void scan(Position robot){
-        std::vector<Position> dirty = scan_(robot, current_state_);
+        std::vector<Position> dirty = scan_(robot, currentState_);
 
         for (const Position& d : dirty) {
             Cell truth = probe_(d);
-            truth.computed_cost = cost_func_(truth);
-            Cell& cur  = current_state_[d.x, d.y];
+            Cell& cur  = currentState_[d.x, d.y];
             cur = truth;
             cur.is_visited = true;
         }
@@ -368,12 +383,12 @@ struct NaiveAStarNavigator {
     }
 
     void computeShortestPath(Position start, Position end) {
-        current_search_id_++;
+        currentSearchId_++;
 
         open_.clear();
 
         int startIdx = idx(start.x, start.y);
-        generated_id_[startIdx] = current_search_id_;
+        generated_id_[startIdx] = currentSearchId_;
         g_[startIdx] = 0.0f;
         
         float start_h = heuristic_(start, end);
@@ -387,21 +402,21 @@ struct NaiveAStarNavigator {
     
             int currentIdx = idx(current.pos.x, current.pos.y);
             
-            if (closed_id_[currentIdx] == current_search_id_) continue;
-            closed_id_[currentIdx] = current_search_id_;
+            if (closed_id_[currentIdx] == currentSearchId_) continue;
+            closed_id_[currentIdx] = currentSearchId_;
     
             if (current.pos.x == end.x && current.pos.y == end.y) break;
     
             for (const auto& neighb : getNeighbors(current.pos)) {
                 int neighbIdx = idx(neighb.x, neighb.y);
-                if (closed_id_[neighbIdx] == current_search_id_) continue;
+                if (closed_id_[neighbIdx] == currentSearchId_) continue;
                 
-                float current_neighb_g = (generated_id_[neighbIdx] == current_search_id_) ? g_[neighbIdx] : kInf;
+                float currentNeighbG = (generated_id_[neighbIdx] == currentSearchId_) ? g_[neighbIdx] : kInf;
                 float newCost = g_[currentIdx] + edgeCost(current.pos, neighb);
                 
-                if (newCost >= current_neighb_g) continue;
+                if (newCost >= currentNeighbG) continue;
                 
-                generated_id_[neighbIdx] = current_search_id_;
+                generated_id_[neighbIdx] = currentSearchId_;
                 g_[neighbIdx] = newCost;
                 cameFrom_[neighbIdx] = current.pos;
                 
@@ -437,11 +452,11 @@ template<typename CostFn, typename Probe, typename Heur, typename Scan>
 requires CostFunction<CostFn> && ProbeFunction<Probe> && Heuristic<Heur> && SensorFunction<Scan>
 struct MPAAStarNavigator {
     MPAAStarNavigator(int width, int height,
-                       CostFn cost_func, Probe probe, Scan scan,
+                       CostFn costFunc, Probe probe, Scan scan,
                        Heur heuristic = zeroHeuristic)
         : width_(width), height_(height),
-          cost_func_(cost_func), probe_(probe), scan_(scan), heuristic_(heuristic) {
-            current_state_.resize(width, height);
+          costFunc_(costFunc), probe_(probe), scan_(scan), heuristic_(heuristic) {
+            currentState_.resize(width, height);
             auto N = static_cast<size_t>(width) * height;
             g_.assign(N, kInf);
             h_.assign(N, 0.0f);
@@ -452,6 +467,23 @@ struct MPAAStarNavigator {
             open_.reserve(N);
             closedThisRun_.reserve(N / 4);
         }
+
+    void reset(){
+        initialized_ = false;
+        counter_ = 0;
+        auto N = static_cast<size_t>(width) * height;
+        g_.assign(N, kInf);
+        h_.assign(N, 0.0f);
+        search_.assign(N, 0);
+        closed_.assign(N, false);
+        cameFrom_.assign(N, {-1, -1});
+        next_.assign(N, {-1, -1});
+        open_.clear();
+        closedThisRun_.clear();
+
+        goal_ = Position{};
+        currentState_ = Region{};
+    }
 
     std::vector<Position> replan(Position start, Position end) {
         if (!initialized_) {
@@ -475,12 +507,12 @@ struct MPAAStarNavigator {
     };
 
     int width_, height_;
-    CostFn cost_func_;
+    CostFn costFunc_;
     Probe probe_;
     Scan scan_;
     Heur heuristic_;
 
-    Region current_state_{};
+    Region currentState_{};
     std::vector<float> g_;
     std::vector<float> h_;   
     std::vector<int> search_;  
@@ -510,27 +542,23 @@ struct MPAAStarNavigator {
     }
 
     float edgeCost(Position a, Position b) const {
-        const auto& cellA = current_state_[a.x, a.y];
-        const auto& cellB = current_state_[b.x, b.y];
-        if(cellA.is_impassable || cellB.is_impassable) { return kInf; }
-        float d = (a.x == b.x || a.y == b.y) ? 1.0f : std::sqrt(2.0f);
-        return 0.5f * (cellA.computed_cost + cellB.computed_cost) * d;
+        const auto& cellA = currentState_[a.x, a.y];
+        const auto& cellB = currentState_[b.x, b.y];
+        return costFunc_(cellA, cellB, a, b);
     }
 
     void scan(Position robot){
-        std::vector<Position> dirty = scan_(robot, current_state_);
+        std::vector<Position> dirty = scan_(robot, currentState_);
 
         for (const Position& d : dirty) {
-            Cell old = current_state_[d.x, d.y];
+            Cell old = currentState_[d.x, d.y];
             Cell truth = probe_(d);
-            truth.computed_cost = cost_func_(truth);
-            Cell& cur  = current_state_[d.x, d.y];
+            Cell& cur  = currentState_[d.x, d.y];
             cur = truth;
             cur.is_visited = true;
 
             bool costIncreased = false;
             if (truth.is_impassable && !old.is_impassable) costIncreased = true;
-            if (truth.computed_cost > cost_func_(old) + 1e-6f) costIncreased = true;
 
             // Observe(s): if cost of an arc increased, null next pointers for the arc endpoints.
             if (costIncreased) {
