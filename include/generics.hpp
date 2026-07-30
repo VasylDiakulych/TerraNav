@@ -25,6 +25,7 @@ struct Cell {
     float wind_dir{0.0f};
 
     bool is_impassable{false};
+    bool is_rock{false};
 
     bool is_visited{false};
 };
