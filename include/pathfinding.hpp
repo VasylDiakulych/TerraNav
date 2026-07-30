@@ -193,7 +193,7 @@ struct DStarLiteNavigator {
             key kStart = calculateKey(start);
             float gStart   = g_[idx(start.x, start.y)];
             float rhsStart = rhs_[idx(start.x, start.y)];
-            bool startConsistent = abs(gStart - rhsStart) < 1e-5f;
+            bool startConsistent = std::abs(gStart - rhsStart) < 1e-5f;
             if (!(top.k < kStart) && startConsistent) break;
 
             Position u = top.pos;
