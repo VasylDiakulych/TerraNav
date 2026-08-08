@@ -6,7 +6,7 @@
 #include <cmath>
 #include <limits>
 
-inline constexpr float kInf = std::numeric_limits<float>::infinity();
+inline constexpr float INF = std::numeric_limits<float>::infinity();
 
 struct Position {
     int x{0}, y{0};
@@ -15,6 +15,7 @@ struct Position {
 
 struct Cell {
     float absolute_elevation{0.0f};
+    float craterDelta{0.0f};
     float slope_dx{0.0f};
     float slope_dy{0.0f};
 
@@ -28,6 +29,8 @@ struct Cell {
     bool is_rock{false};
 
     bool is_visited{false};
+
+    [[nodiscard]] float combinedElevation() const { return absolute_elevation + craterDelta; }
 };
 
 struct Region{
@@ -80,14 +83,14 @@ concept CostFunction = requires (const F& f, const Cell& a, const Cell& b, Posit
 };
 
 inline float actualCost(const Cell& from, const Cell& to, Position a, Position b) {
-    if (from.is_impassable || to.is_impassable) return kInf;
+    if (from.is_impassable || to.is_impassable) return INF;
 
     float dx = static_cast<float>(b.x - a.x);
     float dy = static_cast<float>(b.y - a.y);
     float distance = std::sqrt(dx*dx + dy*dy);
     if (distance < 1e-6f) return 0.0f;
 
-    float elevationGain = to.absolute_elevation - from.absolute_elevation;
+    float elevationGain = to.combinedElevation() - from.combinedElevation();
     float slopeAngle = elevationGain / distance;
     float slopePenalty = slopeAngle > 0.10f
         ? (slopeAngle - 0.10f) * (slopeAngle - 0.10f) * 10.0f
@@ -129,8 +132,8 @@ inline bool lineOfSight(const Region& state, int width, int height,
     float totalSq = static_cast<float>((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
     if (totalSq == 0.0f) return true;
 
-    float eFrom = state[from.x, from.y].absolute_elevation;
-    float eTo   = state[to.x, to.y].absolute_elevation;
+    float eFrom = state[from.x, from.y].combinedElevation();
+    float eTo   = state[to.x, to.y].combinedElevation();
 
     while (true) {
         if (x == x1 && y == y1) break;
@@ -143,7 +146,7 @@ inline bool lineOfSight(const Region& state, int width, int height,
         if (!state[x, y].is_visited) continue;
         float t = ((x - x0) * (x1 - x0) + (y - y0) * (y1 - y0)) / totalSq;
         float lineH = eFrom + t * (eTo - eFrom);
-        if (state[x, y].absolute_elevation > lineH) return false;
+        if (state[x, y].combinedElevation() > lineH) return false;
     }
 
     return true;

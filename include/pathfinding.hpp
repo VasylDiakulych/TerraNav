@@ -18,7 +18,7 @@ struct Neighbors {
     const Position* end()   const { return data + count; }
 };
 
-static constexpr std::array<std::pair<int, int>, 8> kNeighb {{
+static constexpr std::array<std::pair<int, int>, 8> NEIGHB {{
     {1, 0}, {-1, 0}, {0, 1}, {0, -1},
     {1, -1}, {-1, -1}, {-1, 1}, {1, 1}
 }};
@@ -32,15 +32,15 @@ struct DStarLiteNavigator {
         : width_(width), height_(height),
           costFunc_(costFunc), probe_(probe), scan_(scan), heuristic_(heuristic) {
             currentState_.resize(width_, height_);
-            std::ranges::fill(g_, kInf);
-            std::ranges::fill(rhs_, kInf);
+            std::ranges::fill(g_, INF);
+            std::ranges::fill(rhs_, INF);
             std::ranges::fill(inOpen_, false);
         }
 
     void reset() {
         initialized_ = false;
-        std::ranges::fill(g_, kInf);
-        std::ranges::fill(rhs_, kInf);
+        std::ranges::fill(g_, INF);
+        std::ranges::fill(rhs_, INF);
         std::ranges::fill(inOpen_, false);
         while (!open_.empty()) open_.pop();
         km = 0.0f;
@@ -96,7 +96,7 @@ struct DStarLiteNavigator {
 
     Neighbors getNeighbors(Position s) const {
         Neighbors n;
-        for (auto [dx, dy] : kNeighb) {
+        for (auto [dx, dy] : NEIGHB) {
             int nx = s.x + dx, ny = s.y + dy;
             if (inBounds(nx, ny)) {
                 n.data[n.count++] = {.x = nx, .y = ny};
@@ -127,8 +127,8 @@ struct DStarLiteNavigator {
 
     void initialize(Position end) {
         goal_ = end;
-        std::ranges::fill(g_, kInf);
-        std::ranges::fill(rhs_, kInf);
+        std::ranges::fill(g_, INF);
+        std::ranges::fill(rhs_, INF);
         std::ranges::fill(inOpen_, false);
         while (!open_.empty()) open_.pop();
         km = 0.0f;
@@ -206,7 +206,7 @@ struct DStarLiteNavigator {
                 g_[idx(u.x, u.y)] = rhsu;
                 for (const auto& n : getNeighbors(u)) updateVertex(n);
             } else if (gu < rhsu) {
-                g_[idx(u.x, u.y)] = kInf;
+                g_[idx(u.x, u.y)] = INF;
                 for (const auto& n : getNeighbors(u)) updateVertex(n);
                 updateVertex(u);
             }
@@ -224,7 +224,7 @@ struct DStarLiteNavigator {
     void updateVertex(Position s) {
         int i = idx(s.x, s.y);
         if (!(s.x == goal_.x && s.y == goal_.y)) {
-            float best = kInf;
+            float best = INF;
             for (const auto& n : getNeighbors(s)) {
                 best = std::min(best, edgeCost(s, n) + g_[idx(n.x, n.y)]);
             }
@@ -243,7 +243,7 @@ struct DStarLiteNavigator {
 
     std::vector<Position> reconstructPath(Position start) const {
         std::vector<Position> path;
-        if (g_[idx(start.x, start.y)] == kInf) return path;
+        if (g_[idx(start.x, start.y)] == INF) return path;
 
         Position cur = start;
         path.push_back(cur);
@@ -252,12 +252,12 @@ struct DStarLiteNavigator {
         while (!(cur.x == goal_.x && cur.y == goal_.y)) {
             if (++guard > maxSteps) break;
             Position best = cur;
-            float bestVal = kInf;
+            float bestVal = INF;
             for (const auto& n : getNeighbors(cur)) {
                 float v = edgeCost(cur, n) + g_[idx(n.x, n.y)];
                 if (v < bestVal) { bestVal = v; best = n; }
             }
-            if (bestVal == kInf) break;
+            if (bestVal == INF) break;
             cur = best;
             path.push_back(cur);
         }
@@ -282,7 +282,7 @@ struct NaiveAStarNavigator {
             currentState_.resize(width_, height_);
             auto N = static_cast<size_t>(width_) * height_;
             
-            g_.assign(N, kInf);
+            g_.assign(N, INF);
             generated_id_.assign(N, 0);
             closed_id_.assign(N, 0);
             cameFrom_.assign(N, {-1, -1});
@@ -294,7 +294,7 @@ struct NaiveAStarNavigator {
         auto N = static_cast<size_t>(width_) * height_;
 
         currentSearchId_ = 0;
-        g_.assign(N, kInf);
+        g_.assign(N, INF);
         generated_id_.assign(N, 0);
         closed_id_.assign(N, 0);
         cameFrom_.assign(N, {-1, -1});
@@ -352,7 +352,7 @@ struct NaiveAStarNavigator {
 
     Neighbors getNeighbors(Position s) const {
         Neighbors n;
-        for (auto [dx, dy] : kNeighb) {
+        for (auto [dx, dy] : NEIGHB) {
             int nx = s.x + dx, ny = s.y + dy;
             if (inBounds(nx, ny)) {
                 n.data[n.count++] = {.x = nx, .y = ny};
@@ -411,7 +411,7 @@ struct NaiveAStarNavigator {
                 int neighbIdx = idx(neighb.x, neighb.y);
                 if (closed_id_[neighbIdx] == currentSearchId_) continue;
                 
-                float currentNeighbG = (generated_id_[neighbIdx] == currentSearchId_) ? g_[neighbIdx] : kInf;
+                float currentNeighbG = (generated_id_[neighbIdx] == currentSearchId_) ? g_[neighbIdx] : INF;
                 float newCost = g_[currentIdx] + edgeCost(current.pos, neighb);
                 
                 if (newCost >= currentNeighbG) continue;
@@ -430,7 +430,7 @@ struct NaiveAStarNavigator {
     std::vector<Position> reconstructPath(Position start) const {
         std::vector<Position> path;
         int goalIdx = idx(goal_.x, goal_.y);
-        if (g_[goalIdx] == kInf) return path;
+        if (g_[goalIdx] == INF) return path;
 
         Position cur = goal_;
         while (!(cur.x == start.x && cur.y == start.y)) {
@@ -458,7 +458,7 @@ struct MPAAStarNavigator {
           costFunc_(costFunc), probe_(probe), scan_(scan), heuristic_(heuristic) {
             currentState_.resize(width_, height);
             auto N = static_cast<size_t>(width_) * height_;
-            g_.assign(N, kInf);
+            g_.assign(N, INF);
             h_.assign(N, 0.0f);
             search_.assign(N, 0);
             closed_.assign(N, false);
@@ -472,7 +472,7 @@ struct MPAAStarNavigator {
         initialized_ = false;
         counter_ = 0;
         auto N = static_cast<size_t>(width_) * height_;
-        g_.assign(N, kInf);
+        g_.assign(N, INF);
         h_.assign(N, 0.0f);
         search_.assign(N, 0);
         closed_.assign(N, false);
@@ -532,7 +532,7 @@ struct MPAAStarNavigator {
 
     Neighbors getNeighbors(Position s) const {
         Neighbors n;
-        for (auto [dx, dy] : kNeighb) {
+        for (auto [dx, dy] : NEIGHB) {
             int nx = s.x + dx, ny = s.y + dy;
             if (inBounds(nx, ny)) {
                 n.data[n.count++] = {.x = nx, .y = ny};
@@ -582,7 +582,7 @@ struct MPAAStarNavigator {
     void initializeState(Position s) {
         int i = idx(s.x, s.y);
         if (search_[i] != counter_) {
-            g_[i] = kInf;
+            g_[i] = INF;
             search_[i] = counter_;
         }
     }
@@ -653,7 +653,7 @@ struct MPAAStarNavigator {
             float gResult = g_[resIdx];
             float hResult = h_[resIdx];
             for (int currentIdx : closedThisRun_) {
-                if (search_[currentIdx] == counter_ && g_[currentIdx] != kInf) {
+                if (search_[currentIdx] == counter_ && g_[currentIdx] != INF) {
                     h_[currentIdx] = gResult + hResult - g_[currentIdx];
                 }
             }

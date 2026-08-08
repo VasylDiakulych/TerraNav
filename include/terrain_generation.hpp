@@ -12,7 +12,7 @@
 #include "../third_party/PerlinNoise.hpp"
 
 // Elevation shaping exponent: >1 flattens valleys while massifs keep height
-inline constexpr double kElevationShape{1.3};
+inline constexpr double ELEVATION_SHAPE{1.3};
 
 struct NoiseParams {
     int octaves{6};
@@ -24,17 +24,17 @@ struct CraterParams {
     size_t maxCountPerRegion{1};   // per region-sized unit of area
     double minRadius{4.0};
     double maxRadius{14.0};
-    double depthFactor{0.01};
+    double depthFactor{0.007};
     double rimRatio{0.2};
     double rimWidth{0.5};
 };
 
 struct RockParams {
     size_t maxClustersPerRegion{2};
-    size_t maxRocksPerCluster{4};
+    size_t maxRocksPerCluster{10};
     double clusterSpread{6.0};
     double minCoreRadius{0.5};
-    double maxCoreRadius{2.5};
+    double maxCoreRadius{5};
     double haloFactor{2.0};
     double roughness{0.8};
 };
@@ -117,7 +117,7 @@ struct RegionGenerator {
                 Cell& c = reg[static_cast<int>(cx), static_cast<int>(cy)];
 
                 double e = elevation(nx, ny);
-                c.absolute_elevation = static_cast<float>(std::pow(e, kElevationShape));
+                c.absolute_elevation = static_cast<float>(std::pow(e, ELEVATION_SHAPE));
                 c.humidity = 0.05f;
                 c.roughness = std::clamp(
                     static_cast<float>(roughnessNoise.normalizedOctave2D_01(nx + 8.2, ny + 2.5, noise.octaves, noise.persistence)),
@@ -187,6 +187,14 @@ struct Map {
                    static_cast<int>(wy % gen.regionHeight_)];
     }
 
+    const Cell& cellAt(size_t wx, size_t wy) const {
+        size_t rx = wx / gen.regionWidth_;
+        size_t ry = wy / gen.regionHeight_;
+        const Region& reg = tiles[ry * width_ + rx];
+        return reg[static_cast<int>(wx % gen.regionWidth_),
+                   static_cast<int>(wy % gen.regionHeight_)];
+    }
+
     void addCraters() {
         size_t totalW = width_ * gen.regionWidth_;
         size_t totalH = height_ * gen.regionHeight_;
@@ -195,13 +203,23 @@ struct Map {
         std::uniform_int_distribution<size_t> countDist(0, craterParams.maxCountPerRegion * width_ * height_);
         std::uniform_real_distribution<double> xDist(0.0, static_cast<double>(totalW) - 1.0);
         std::uniform_real_distribution<double> yDist(0.0, static_cast<double>(totalH) - 1.0);
-        std::uniform_real_distribution<double> radiusDist(craterParams.minRadius, craterParams.maxRadius);
+        std::uniform_real_distribution<double> radiusDist(0.0, 1.0);
 
         size_t craterCount = countDist(rng);
         for (size_t i = 0; i < craterCount; ++i) {
             double crx = xDist(rng);
             double cry = yDist(rng);
-            double radius = radiusDist(rng);
+            // Bias toward smaller craters: square the uniform sample, then map to [minRadius, maxRadius]
+            double radiusNorm = radiusDist(rng);
+            double radius = craterParams.minRadius + (craterParams.maxRadius - craterParams.minRadius) * (radiusNorm * radiusNorm);
+
+            // Skip steep slopes
+            size_t checkX = static_cast<size_t>(std::clamp(std::round(crx), 0.0, static_cast<double>(totalW - 1)));
+            size_t checkY = static_cast<size_t>(std::clamp(std::round(cry), 0.0, static_cast<double>(totalH - 1)));
+            const Cell& center = cellAt(checkX, checkY);
+            float slope = std::hypot(center.slope_dx, center.slope_dy);
+            if (slope > 0.15f) continue;
+
             double depth = radius * craterParams.depthFactor;
             double rimHeight = depth * craterParams.rimRatio;
 
@@ -211,6 +229,15 @@ struct Map {
             size_t x1 = static_cast<size_t>(std::clamp(std::ceil(crx + extent), 0.0, static_cast<double>(totalW - 1)));
             size_t y0 = static_cast<size_t>(std::clamp(std::floor(cry - extent), 0.0, static_cast<double>(totalH - 1)));
             size_t y1 = static_cast<size_t>(std::clamp(std::ceil(cry + extent), 0.0, static_cast<double>(totalH - 1)));
+
+            // Skip if any cell in extent already has a crater
+            bool overlap = false;
+            for (size_t wy = y0; wy <= y1 && !overlap; ++wy) {
+                for (size_t wx = x0; wx <= x1 && !overlap; ++wx) {
+                    if (cellAt(wx, wy).craterDelta != 0.0f) overlap = true;
+                }
+            }
+            if (overlap) continue;
 
             for (size_t wy = y0; wy <= y1; ++wy) {
                 for (size_t wx = x0; wx <= x1; ++wx) {
@@ -224,9 +251,7 @@ struct Map {
                     double rimT = (t - 1.0) / craterParams.rimWidth;
                     delta += rimHeight * std::exp(-rimT * rimT);
 
-                    Cell& c = cellAt(wx, wy);
-                    c.absolute_elevation = std::clamp(
-                        c.absolute_elevation + static_cast<float>(delta), 0.0f, 1.0f);
+                    cellAt(wx, wy).craterDelta = static_cast<float>(delta);
                 }
             }
         }
@@ -258,6 +283,12 @@ struct Map {
                 double dist = spreadDist(rng);
                 double rockX = std::clamp(cx + std::cos(angle) * dist, 0.0, static_cast<double>(totalW) - 1.0);
                 double rockY = std::clamp(cy + std::sin(angle) * dist, 0.0, static_cast<double>(totalH) - 1.0);
+
+                size_t checkX = static_cast<size_t>(std::clamp(std::round(rockX), 0.0, static_cast<double>(totalW) - 1.0));
+                size_t checkY = static_cast<size_t>(std::clamp(std::round(rockY), 0.0, static_cast<double>(totalH) - 1.0));
+                if (cellAt(checkX, checkY).absolute_elevation > 0.65f) continue;
+                if (cellAt(checkX, checkY).craterDelta != 0.0f) continue;
+
                 double core = coreDist(rng);
                 double halo = core * rockParams.haloFactor;
 
@@ -303,10 +334,10 @@ struct Map {
 
                 Cell& c = cellAt(wx, wy);
                 if (xp > xm)
-                    c.slope_dx = (cellAt(xp, wy).absolute_elevation - cellAt(xm, wy).absolute_elevation)
+                    c.slope_dx = (cellAt(xp, wy).combinedElevation() - cellAt(xm, wy).combinedElevation())
                                  / static_cast<float>(xp - xm);
                 if (yp > ym)
-                    c.slope_dy = (cellAt(wx, yp).absolute_elevation - cellAt(wx, ym).absolute_elevation)
+                    c.slope_dy = (cellAt(wx, yp).combinedElevation() - cellAt(wx, ym).combinedElevation())
                                  / static_cast<float>(yp - ym);
             }
         }
