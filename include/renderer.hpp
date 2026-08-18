@@ -9,6 +9,7 @@
 
 #include "generics.hpp"
 #include "terrain_generation.hpp"
+#include "region_pathfinding.hpp"
 
 constexpr float CELL_SIZE = 1.0f;
 constexpr int CHUNK_SIZE = 64;
@@ -54,16 +55,10 @@ inline Color elevationColor(const Cell& c) {
 }
 
 inline Color cellColor(const Cell& c, bool fogEnabled) {
-    if (fogEnabled && !c.is_visited) return { 20, 18, 16, 255 };
+    if (fogEnabled && !c.is_visited) return { 35, 30, 28, 255 };
     return elevationColor(c);
 }
 
-struct GateInfo {
-    int regionAX{0}, regionAY{0};
-    int regionBX{0}, regionBY{0};
-    int cellX{0}, cellY{0};
-    bool blocked{false};
-};
 
 enum class RenderMode {
     Satellite,
@@ -294,7 +289,7 @@ struct Renderer {
     // --- Drawing ---
 
     void drawSatellite(const Map& map, bool showGates, bool showGrid,
-                       const std::vector<GateInfo>& gates,
+                       const std::vector<Gate>& gates,
                        const std::vector<int>& macroPath,
                        int regionsX, int regionsY,
                        int droneCellX, int droneCellZ) {
@@ -310,10 +305,10 @@ struct Renderer {
             drawRegionGrid_(map);
 
         if (!macroPath.empty())
-            drawMacroPath_(macroPath, regionsX, regionsY);
+            drawMacroPath_(macroPath, regionsX, regionsY, map);
 
         if (showGates)
-            drawGates_(gates);
+            drawGates_(gates, map);
 
         // Drone marker on full map
         int mapCols = static_cast<int>(map.width_ * map.gen.regionWidth_);
@@ -356,7 +351,7 @@ struct Renderer {
     }
 
     void drawMacroPath_(const std::vector<int>& macroPath,
-                        int regionsX, int regionsY) {
+                        int regionsX, int regionsY, const Map& map) {
         if (macroPath.size() < 2) return;
 
         int regionW = CHUNK_SIZE;
@@ -372,13 +367,18 @@ struct Renderer {
             int rx1 = macroPath[i + 1] % regionsX;
             int ry1 = macroPath[i + 1] / regionsX;
 
-            float cx0 = offsetX_ + (static_cast<float>(rx0) + 0.5f) * regionW * CELL_SIZE;
-            float cz0 = offsetZ_ + (static_cast<float>(ry0) + 0.5f) * regionH * CELL_SIZE;
-            float cx1 = offsetX_ + (static_cast<float>(rx1) + 0.5f) * regionW * CELL_SIZE;
-            float cz1 = offsetZ_ + (static_cast<float>(ry1) + 0.5f) * regionH * CELL_SIZE;
+            int cellX0 = rx0 * regionW + regionW / 2;
+            int cellZ0 = ry0 * regionH + regionH / 2;
+            int cellX1 = rx1 * regionW + regionW / 2;
+            int cellZ1 = ry1 * regionH + regionH / 2;
 
-            float y0 = 40.0f;
-            float y1 = 40.0f;
+            float cx0 = offsetX_ + static_cast<float>(cellX0) * CELL_SIZE;
+            float cz0 = offsetZ_ + static_cast<float>(cellZ0) * CELL_SIZE;
+            float cx1 = offsetX_ + static_cast<float>(cellX1) * CELL_SIZE;
+            float cz1 = offsetZ_ + static_cast<float>(cellZ1) * CELL_SIZE;
+
+            float y0 = heightAt(map, cellX0, cellZ0) + 5.0f;
+            float y1 = heightAt(map, cellX1, cellZ1) + 5.0f;
 
             rlVertex3f(cx0, y0, cz0);
             rlVertex3f(cx1, y1, cz1);
@@ -387,15 +387,27 @@ struct Renderer {
         rlEnd();
     }
 
-    void drawGates_(const std::vector<GateInfo>& gates) {
-        for (const GateInfo& g : gates) {
+    void drawGates_(const std::vector<Gate>& gates, const Map& map) {
+        rlBegin(RL_LINES);
+        rlColor4ub(255, 180, 60, 220);
+        rlSetLineWidth(3);
+
+        for (const Gate& g : gates) {
             if (g.blocked) continue;
 
-            float gx = offsetX_ + static_cast<float>(g.cellX) * CELL_SIZE;
-            float gz = offsetZ_ + static_cast<float>(g.cellY) * CELL_SIZE;
+            float x0 = offsetX_ + static_cast<float>(g.globalStartX) * CELL_SIZE;
+            float z0 = offsetZ_ + static_cast<float>(g.globalStartY) * CELL_SIZE;
+            float x1 = offsetX_ + static_cast<float>(g.globalEndX) * CELL_SIZE;
+            float z1 = offsetZ_ + static_cast<float>(g.globalEndY) * CELL_SIZE;
 
-            DrawCube({ gx, 5.0f, gz }, 2.0f, 8.0f, 2.0f, { 255, 180, 60, 255 });
+            float y0 = heightAt(map, g.globalStartX, g.globalStartY) + 2.0f;
+            float y1 = heightAt(map, g.globalEndX, g.globalEndY) + 2.0f;
+
+            rlVertex3f(x0, y0, z0);
+            rlVertex3f(x1, y1, z1);
         }
+
+        rlEnd();
     }
 
     void drawGround(const std::vector<Position>& path) {

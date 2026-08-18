@@ -14,6 +14,8 @@
 #include "../../include/terrain_generation.hpp"
 #include "../../include/renderer.hpp"
 #include "../../include/controls.hpp"
+#include "../../include/region_pathfinding.hpp"
+#include "../../include/hierarchical_navigator.hpp"
 
 namespace {
 
@@ -70,34 +72,6 @@ void updateFreeCamera(Camera3D& cam, float moveSpeed) {
         float newLen = std::max(len * (1.0f - wheel * 0.1f), moveSpeed * 0.5f);
         cam.position = Vector3Subtract(cam.target, Vector3Scale(dir, newLen));
     }
-}
-
-Region makeExploredRegion(const Map& map, size_t regionIdx,
-                          int droneX, int droneZ, float sensorRange) {
-    Region reg = map.tiles[regionIdx];
-
-    int r = static_cast<int>(std::ceil(sensorRange)) + 1;
-    float edgeWidth = 1.5f;
-
-    for (int dy = -r; dy <= r; ++dy) {
-        for (int dx = -r; dx <= r; ++dx) {
-            int x = droneX + dx;
-            int y = droneZ + dy;
-            if (x < 0 || y < 0 || x >= reg.width || y >= reg.height) continue;
-
-            float dist = std::sqrt(static_cast<float>(dx * dx + dy * dy));
-            if (dist > sensorRange + edgeWidth) continue;
-
-            if (dist > sensorRange) {
-                float t = 1.0f - (dist - sensorRange) / edgeWidth;
-                reg[x, y].is_visited = true;
-                reg[x, y].roughness = reg[x, y].roughness * (1.0f - t * 0.5f);
-            } else {
-                reg[x, y].is_visited = true;
-            }
-        }
-    }
-    return reg;
 }
 
 } // namespace
@@ -160,6 +134,19 @@ int main(void) {
 
     float mapHalf = static_cast<float>(REGIONS_X * REGION_W) * 0.5f * CELL_SIZE;
 
+    // --- Region graph (gates + macro A*) ---
+    RegionGraph regionGraph;
+    regionGraph.buildFromMap(*map);
+
+    int startRegionX = 0, startRegionY = 0;
+    int goalRegionX = static_cast<int>(REGIONS_X) - 1, goalRegionY = static_cast<int>(REGIONS_Y) - 1;
+
+    // --- Hierarchical navigator ---
+    float sensorRange = 12.0f;
+    HierarchicalNavigator hNav;
+    hNav.init(map.get(), &regionGraph, startRegionX, startRegionY,
+              goalRegionX, goalRegionY, sensorRange);
+
     // --- Renderer ---
     Renderer renderer {
         .heightScale = 75.0f,
@@ -173,26 +160,10 @@ int main(void) {
             renderer.regionModel_.materials[0].shader = lightingShader;
     };
 
-    // Build full-map chunk meshes for satellite mode
     renderer.rebuildAll(*map);
     setupMaterial();
 
-    // --- Current region for ground view ---
-    int currentRegionX = static_cast<int>(REGIONS_X) / 2;
-    int currentRegionY = static_cast<int>(REGIONS_Y) / 2;
-    size_t currentRegionIdx = static_cast<size_t>(currentRegionY) * map->width_
-                            + static_cast<size_t>(currentRegionX);
-
-    int droneCellX = static_cast<int>(REGION_W) / 2;
-    int droneCellZ = static_cast<int>(REGION_H) / 2;
-    float sensorRange = 7.0f;
-
-    // Global drone position (for satellite marker)
-    int droneGlobalX = currentRegionX * static_cast<int>(REGION_W) + droneCellX;
-    int droneGlobalZ = currentRegionY * static_cast<int>(REGION_H) + droneCellZ;
-
-    Region exploredReg = makeExploredRegion(*map, currentRegionIdx,
-                                            droneCellX, droneCellZ, sensorRange);
+    Region exploredReg = hNav.getExploredRegion();
     renderer.rebuildRegion(exploredReg, true);
     setupMaterial();
 
@@ -200,13 +171,6 @@ int main(void) {
     Mesh droneMesh = GenMeshSphere(0.5f, 16, 16);
     Model droneModel = LoadModelFromMesh(droneMesh);
     droneModel.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = { 100, 200, 255, 255 };
-
-    Position startPos{ .x = 5, .y = 5 };
-    Position goalPos{ .x = static_cast<int>(REGION_W) - 5,
-                     .y = static_cast<int>(REGION_H) - 5 };
-
-    Model startMarker = LoadModelFromMesh(GenMeshCube(0.8f, 1.5f, 0.8f));
-    startMarker.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = { 80, 255, 80, 255 };
 
     Model goalMarker = LoadModelFromMesh(GenMeshCube(0.8f, 1.5f, 0.8f));
     goalMarker.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = { 255, 80, 80, 255 };
@@ -245,22 +209,39 @@ int main(void) {
     bool showGrid = true;
     bool fogEnabled = true;
 
-    // Empty path/gates — populated by hierarchical navigator later
-    std::vector<Position> microPath;
-    std::vector<int> macroPath;
-    std::vector<GateInfo> gates;
+    float tickTimer = 0.0f;
+    float tickInterval = 0.3f;
+    bool paused = true;
 
     // --- Main loop ---
     while (!WindowShouldClose()) {
-        // TAB: toggle render mode
         if (IsKeyPressed(KEY_TAB)) {
             mode = (mode == RenderMode::Ground) ? RenderMode::Satellite : RenderMode::Ground;
-            camera = (mode == RenderMode::Satellite) ? satelliteCamera : groundCamera;
+            if (mode == RenderMode::Satellite) {
+                float dx = renderer.satOffsetX_ + static_cast<float>(hNav.getDroneGlobalX()) * CELL_SIZE;
+                float dz = renderer.satOffsetZ_ + static_cast<float>(hNav.getDroneGlobalZ()) * CELL_SIZE;
+                satelliteCamera.position = { dx + 200.0f, 200.0f, dz + 200.0f };
+                satelliteCamera.target = { dx, 0.0f, dz };
+                camera = satelliteCamera;
+            } else {
+                camera = groundCamera;
+            }
         }
 
         if (IsKeyPressed(KEY_G)) showGates = !showGates;
         if (IsKeyPressed(KEY_F)) showGrid = !showGrid;
         if (IsKeyPressed(KEY_H)) { fogEnabled = !fogEnabled; renderer.regionDirty_ = true; }
+
+        // Play/pause
+        if (IsKeyPressed(KEY_P)) { paused = !paused; hNav.running = !paused; }
+        if (IsKeyPressed(KEY_N) && paused) { hNav.tick(); renderer.regionDirty_ = true; }
+        // Reset
+        if (IsKeyPressed(KEY_Y)) {
+            regionGraph.buildFromMap(*map);
+            hNav.init(map.get(), &regionGraph, startRegionX, startRegionY,
+                      goalRegionX, goalRegionY, sensorRange);
+            renderer.regionDirty_ = true;
+        }
 
         controller.handleEscape();
 
@@ -279,6 +260,16 @@ int main(void) {
         SetShaderValue(lightingShader, lightingShader.locs[SHADER_LOC_VECTOR_VIEW],
                        &viewPos, SHADER_UNIFORM_VEC3);
 
+        // Simulation tick
+        if (!paused && !hNav.finished) {
+            tickTimer += GetFrameTime();
+            if (tickTimer >= tickInterval) {
+                tickTimer = 0.0f;
+                hNav.tick();
+                renderer.regionDirty_ = true;
+            }
+        }
+
         // Rebuild on parameter change
         if (controller.update(renderer.heightScale, renderer.craterScale)) {
             renderer.markAllDirty();
@@ -290,6 +281,7 @@ int main(void) {
         }
 
         if (renderer.regionDirty_) {
+            exploredReg = hNav.getExploredRegion();
             renderer.rebuildRegion(exploredReg, fogEnabled);
             setupMaterial();
         }
@@ -305,10 +297,11 @@ int main(void) {
                 NoiseParams{}, craterParams
             );
             map->generate();
+            regionGraph.buildFromMap(*map);
+            hNav.init(map.get(), &regionGraph, startRegionX, startRegionY,
+                      goalRegionX, goalRegionY, sensorRange);
             renderer.rebuildAll(*map);
             setupMaterial();
-            exploredReg = makeExploredRegion(*map, currentRegionIdx,
-                                            droneCellX, droneCellZ, sensorRange);
             renderer.regionDirty_ = true;
         }
 
@@ -319,27 +312,30 @@ int main(void) {
 
             BeginMode3D(camera);
                 if (mode == RenderMode::Satellite) {
-                    renderer.drawSatellite(*map, showGates, showGrid, gates, macroPath,
+                    std::vector<int> macroPath;
+                    for (const auto& step : hNav.macroPath)
+                        macroPath.push_back(step.regionY * regionGraph.regionsX + step.regionX);
+
+                    renderer.drawSatellite(*map, showGates, showGrid, regionGraph.gates, macroPath,
                                            static_cast<int>(REGIONS_X),
                                            static_cast<int>(REGIONS_Y),
-                                           droneGlobalX, droneGlobalZ);
+                                           hNav.getDroneGlobalX(), hNav.getDroneGlobalZ());
                 } else {
-                    renderer.drawGround(microPath);
+                    renderer.drawGround(hNav.microPath);
 
-                    float dx = renderer.globalX(droneCellX);
-                    float dz = renderer.globalZ(droneCellZ);
-                    float dy = renderer.heightAt(exploredReg[droneCellX, droneCellZ]) + CELL_SIZE * 0.5f;
+                    int droneX = hNav.droneLocal.x;
+                    int droneZ = hNav.droneLocal.y;
+                    float dx = renderer.globalX(droneX);
+                    float dz = renderer.globalZ(droneZ);
+                    float dy = renderer.heightAt(exploredReg[droneX, droneZ]) + CELL_SIZE * 0.5f;
                     DrawModel(droneModel, { dx, dy, dz }, 1.0f, WHITE);
 
-                    float sx = renderer.globalX(startPos.x);
-                    float sz = renderer.globalZ(startPos.y);
-                    float sy = renderer.heightAt(exploredReg[startPos.x, startPos.y]) + 0.4f;
-                    DrawModel(startMarker, { sx, sy, sz }, 1.0f, WHITE);
-
-                    float gx = renderer.globalX(goalPos.x);
-                    float gz = renderer.globalZ(goalPos.y);
-                    float gy = renderer.heightAt(exploredReg[goalPos.x, goalPos.y]) + 0.4f;
-                    DrawModel(goalMarker, { gx, gy, gz }, 1.0f, WHITE);
+                    if (!hNav.finished && hNav.currentStepIndex == static_cast<int>(hNav.macroPath.size()) - 1) {
+                        float gx = renderer.globalX(hNav.finalGoal.x);
+                        float gz = renderer.globalZ(hNav.finalGoal.y);
+                        float gy = renderer.heightAt(exploredReg[hNav.finalGoal.x, hNav.finalGoal.y]) + 0.4f;
+                        DrawModel(goalMarker, { gx, gy, gz }, 1.0f, WHITE);
+                    }
 
                     DrawCircle3D({ dx, dy, dz }, sensorRange, { 1.0f, 0.0f, 0.0f }, 90.0f,
                                  { 100, 200, 255, 100 });
@@ -360,13 +356,20 @@ int main(void) {
             const char* modeText = (mode == RenderMode::Satellite) ? "SATELLITE" : "GROUND";
             DrawText(modeText, screenWidth - 120, 15, 20, { 255, 255, 255, 220 });
             DrawText("TAB: switch", screenWidth - 120, 40, 14, { 200, 200, 200, 180 });
-            DrawText("G: gates  F: grid  H: fog", screenWidth - 160, 58, 14, { 200, 200, 200, 180 });
+            DrawText("P: play/pause  N: step  Y: reset", screenWidth - 280, 58, 14, { 200, 200, 200, 180 });
+            DrawText("G: gates  F: grid  H: fog", screenWidth - 160, 76, 14, { 200, 200, 200, 180 });
+
+            const char* stateText = paused ? "PAUSED" : (hNav.finished ? "DONE" : "RUNNING");
+            DrawText(stateText, 10, 10, 20, { 255, 255, 255, 220 });
+            DrawText(TextFormat("Region: (%d, %d)  Step: %d/%zu",
+                                hNav.currentRegionX, hNav.currentRegionY,
+                                hNav.currentStepIndex, hNav.macroPath.size()),
+                     10, 35, 16, { 255, 255, 255, 200 });
 
         EndDrawing();
     }
 
     UnloadModel(droneModel);
-    UnloadModel(startMarker);
     UnloadModel(goalMarker);
     UnloadShader(lightingShader);
     renderer.unload();

@@ -21,8 +21,8 @@ struct NoiseParams {
 };
 
 struct CraterParams {
-    size_t maxCountPerRegion{1};   // per region-sized unit of area
-    double minRadius{4.0};
+    size_t maxCountPerRegion{4};   // per region-sized unit of area
+    double minRadius{0.5};
     double maxRadius{14.0};
     double depthFactor{0.007};
     double rimRatio{0.2};
@@ -30,8 +30,8 @@ struct CraterParams {
 };
 
 struct RockParams {
-    size_t maxClustersPerRegion{2};
-    size_t maxRocksPerCluster{10};
+    size_t maxClustersPerRegion{14};
+    size_t maxRocksPerCluster{20};
     double clusterSpread{6.0};
     double minCoreRadius{0.5};
     double maxCoreRadius{5};

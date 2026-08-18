@@ -32,16 +32,16 @@ struct DStarLiteNavigator {
         : width_(width), height_(height),
           costFunc_(costFunc), probe_(probe), scan_(scan), heuristic_(heuristic) {
             currentState_.resize(width_, height_);
-            std::ranges::fill(g_, INF);
-            std::ranges::fill(rhs_, INF);
-            std::ranges::fill(inOpen_, false);
+            g_.assign(static_cast<size_t>(width_) * height_, INF);
+            rhs_.assign(static_cast<size_t>(width_) * height_, INF);
+            inOpen_.assign(static_cast<size_t>(width_) * height_, false);
         }
 
     void reset() {
         initialized_ = false;
-        std::ranges::fill(g_, INF);
-        std::ranges::fill(rhs_, INF);
-        std::ranges::fill(inOpen_, false);
+        g_.assign(static_cast<size_t>(width_) * height_, INF);
+        rhs_.assign(static_cast<size_t>(width_) * height_, INF);
+        inOpen_.assign(static_cast<size_t>(width_) * height_, false);
         while (!open_.empty()) open_.pop();
         km = 0.0f;
         lastStart_ = Position{};
