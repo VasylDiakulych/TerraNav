@@ -1,5 +1,5 @@
-#ifndef RENDERER2_HPP
-#define RENDERER2_HPP
+#ifndef RENDERER_HPP
+#define RENDERER_HPP
 
 #include <algorithm>
 #include <vector>
