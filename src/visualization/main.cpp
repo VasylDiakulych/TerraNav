@@ -74,6 +74,38 @@ void updateFreeCamera(Camera3D& cam, float moveSpeed) {
     }
 }
 
+// Ray-march a mouse ray against the terrain heightmap to find the clicked cell.
+// Returns {-1,-1} if no intersection within the region.
+Position pickTerrainCell(const Camera3D& camera, const Renderer& renderer,
+                         const Region& reg, int regionW, int regionH) {
+    Ray ray = GetMouseRay(GetMousePosition(), camera);
+
+    // March from camera along ray in small steps, check when we go below terrain
+    Vector3 pos = ray.position;
+    Vector3 dir = ray.direction;
+    float step = 0.5f;
+    int maxSteps = 2000;
+
+    for (int i = 0; i < maxSteps; ++i) {
+        pos = Vector3Add(pos, Vector3Scale(dir, step));
+
+        // Convert world position to cell coords
+        float cellXF = (pos.x - renderer.offsetX_) / CELL_SIZE;
+        float cellZF = (pos.z - renderer.offsetZ_) / CELL_SIZE;
+
+        int cx = static_cast<int>(std::floor(cellXF));
+        int cz = static_cast<int>(std::floor(cellZF));
+
+        if (cx < 0 || cz < 0 || cx >= regionW || cz >= regionH) continue;
+
+        float terrainY = renderer.heightAt(reg[cx, cz]);
+        if (pos.y <= terrainY) {
+            return {cx, cz};
+        }
+    }
+    return {-1, -1};
+}
+
 } // namespace
 
 int main(void) {
@@ -245,6 +277,18 @@ int main(void) {
 
         controller.handleEscape();
 
+        // Wall placement: left-click in ground mode + UI mode
+        if (mode == RenderMode::Ground && controller.uiMode &&
+            IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            Position picked = pickTerrainCell(camera, renderer, exploredReg,
+                                              static_cast<int>(REGION_W),
+                                              static_cast<int>(REGION_H));
+            if (picked.x >= 0) {
+                hNav.toggleWall(picked.x, picked.y);
+                renderer.regionDirty_ = true;
+            }
+        }
+
         if (IsKeyPressed(KEY_R)) {
             camera = (mode == RenderMode::Satellite) ? satelliteCamera : groundCamera;
         }
@@ -321,7 +365,11 @@ int main(void) {
                                            static_cast<int>(REGIONS_Y),
                                            hNav.getDroneGlobalX(), hNav.getDroneGlobalZ());
                 } else {
-                    renderer.drawGround(hNav.microPath);
+                    int regionW = static_cast<int>(REGION_W);
+                    int regionH = static_cast<int>(REGION_H);
+                    int originX = hNav.currentRegionX * regionW;
+                    int originY = hNav.currentRegionY * regionH;
+                    renderer.drawGround(hNav.microPath, map->rocks, originX, originY, regionW, regionH);
 
                     int droneX = hNav.droneLocal.x;
                     int droneZ = hNav.droneLocal.y;

@@ -13,6 +13,7 @@
 
 constexpr float CELL_SIZE = 1.0f;
 constexpr int CHUNK_SIZE = 64;
+constexpr int SUBDIV = 4;
 
 inline Color lerpColor(Color a, Color b, float t) {
     if (t < 0.0f) t = 0.0f;
@@ -56,6 +57,7 @@ inline Color elevationColor(const Cell& c) {
 
 inline Color cellColor(const Cell& c, bool fogEnabled) {
     if (fogEnabled && !c.is_visited) return { 35, 30, 28, 255 };
+    if (c.is_impassable && !c.is_rock) return { 200, 50, 50, 255 };
     return elevationColor(c);
 }
 
@@ -78,6 +80,9 @@ struct Renderer {
     // --- Ground: single-region mesh ---
     Model regionModel_{};
     bool regionDirty_ = true;
+
+    // Rock models (variations)
+    std::vector<Model> rockModels_;
 
     // Offsets: satellite uses full-map, ground uses single-region
     float satOffsetX_ = 0.0f;
@@ -226,29 +231,54 @@ struct Renderer {
     void fillRegionVertexData_(Mesh& mesh, const Region& reg, bool fogEnabled) {
         int w = reg.width;
         int h = reg.height;
+        int meshW = (w - 1) * SUBDIV + 1;
+        int meshH = (h - 1) * SUBDIV + 1;
 
-        for (int z = 0; z < h; ++z) {
-            for (int x = 0; x < w; ++x) {
-                int idx = z * w + x;
-                const Cell& c = reg[x, z];
+        auto sampleHeight = [&](float fx, float fz) -> float {
+            int x0 = std::clamp(static_cast<int>(fx), 0, w - 1);
+            int z0 = std::clamp(static_cast<int>(fz), 0, h - 1);
+            int x1 = std::min(x0 + 1, w - 1);
+            int z1 = std::min(z0 + 1, h - 1);
+            float tx = fx - static_cast<float>(x0);
+            float tz = fz - static_cast<float>(z0);
 
-                float hVal = heightAt(c);
+            float h00 = heightAt(reg[x0, z0]);
+            float h10 = heightAt(reg[x1, z0]);
+            float h01 = heightAt(reg[x0, z1]);
+            float h11 = heightAt(reg[x1, z1]);
 
-                mesh.vertices[idx * 3 + 0] = offsetX_ + static_cast<float>(x) * CELL_SIZE;
+            return (h00 * (1 - tx) + h10 * tx) * (1 - tz) +
+                   (h01 * (1 - tx) + h11 * tx) * tz;
+        };
+
+        for (int mz = 0; mz < meshH; ++mz) {
+            for (int mx = 0; mx < meshW; ++mx) {
+                int idx = mz * meshW + mx;
+
+                float fx = static_cast<float>(mx) / SUBDIV;
+                float fz = static_cast<float>(mz) / SUBDIV;
+
+                int cellX = std::clamp(static_cast<int>(fx), 0, w - 1);
+                int cellZ = std::clamp(static_cast<int>(fz), 0, h - 1);
+                const Cell& c = reg[cellX, cellZ];
+
+                float hVal = sampleHeight(fx, fz);
+
+                mesh.vertices[idx * 3 + 0] = offsetX_ + fx * CELL_SIZE;
                 mesh.vertices[idx * 3 + 1] = hVal;
-                mesh.vertices[idx * 3 + 2] = offsetZ_ + static_cast<float>(z) * CELL_SIZE;
+                mesh.vertices[idx * 3 + 2] = offsetZ_ + fz * CELL_SIZE;
 
                 constexpr float TEX_REPEAT = 1.0f / 64.0f;
-                mesh.texcoords[idx * 2 + 0] = static_cast<float>(x) * TEX_REPEAT;
-                mesh.texcoords[idx * 2 + 1] = static_cast<float>(z) * TEX_REPEAT;
+                mesh.texcoords[idx * 2 + 0] = fx * TEX_REPEAT;
+                mesh.texcoords[idx * 2 + 1] = fz * TEX_REPEAT;
 
-                int radius = 2;
-                int leftX  = std::max(x - radius, 0);
-                int rightX = std::min(x + radius, w - 1);
-                int upZ    = std::max(z - radius, 0);
-                int downZ  = std::min(z + radius, h - 1);
-                float dx = (heightAt(reg[rightX, z]) - heightAt(reg[leftX, z])) / static_cast<float>(rightX - leftX);
-                float dz = (heightAt(reg[x, downZ]) - heightAt(reg[x, upZ])) / static_cast<float>(downZ - upZ);
+                float step = 1.0f / SUBDIV;
+                float hxL = sampleHeight(std::max(fx - step, 0.0f), fz);
+                float hxR = sampleHeight(std::min(fx + step, static_cast<float>(w - 1)), fz);
+                float hzU = sampleHeight(fx, std::max(fz - step, 0.0f));
+                float hzD = sampleHeight(fx, std::min(fz + step, static_cast<float>(h - 1)));
+                float dx = (hxR - hxL) / (2.0f * step * CELL_SIZE);
+                float dz = (hzD - hzU) / (2.0f * step * CELL_SIZE);
                 float len = std::sqrt(dx * dx + 1.0f + dz * dz);
                 float invLen = 1.0f / len;
                 mesh.normals[idx * 3 + 0] = -dx * invLen;
@@ -267,16 +297,18 @@ struct Renderer {
     void rebuildRegion(const Region& reg, bool fogEnabled = true) {
         int w = reg.width;
         int h = reg.height;
-        int vertexCount = w * h;
-        int triCount = (w - 1) * (h - 1) * 2;
+        int meshW = (w - 1) * SUBDIV + 1;
+        int meshH = (h - 1) * SUBDIV + 1;
+        int vertexCount = meshW * meshH;
+        int triCount = (meshW - 1) * (meshH - 1) * 2;
 
-        offsetX_ = -w * 0.5f * CELL_SIZE;
-        offsetZ_ = -h * 0.5f * CELL_SIZE;
+        offsetX_ = -static_cast<float>(w) * 0.5f * CELL_SIZE;
+        offsetZ_ = -static_cast<float>(h) * 0.5f * CELL_SIZE;
 
         Mesh mesh{};
         allocateMesh_(mesh, vertexCount, triCount);
         fillRegionVertexData_(mesh, reg, fogEnabled);
-        fillIndices_(mesh, w, h);
+        fillIndices_(mesh, meshW, meshH);
 
         if (regionModel_.meshes != nullptr)
             UnloadModel(regionModel_);
@@ -410,11 +442,123 @@ struct Renderer {
         rlEnd();
     }
 
-    void drawGround(const std::vector<Position>& path) {
+    void generateRockModels_() {
+        for (auto& m : rockModels_)
+            UnloadModel(m);
+        rockModels_.clear();
+
+        // Main rock models (low-poly hemispheres)
+        int sides[] = {4, 5, 6};
+        for (int s : sides) {
+            Mesh m = GenMeshHemiSphere(1.0f, s, s + 1);
+            UploadMesh(&m, false);
+            Model model = LoadModelFromMesh(m);
+            model.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = { 85, 68, 55, 255 };
+            rockModels_.push_back(model);
+        }
+
+        // Small pebble model for halo
+        Mesh pebble = GenMeshHemiSphere(0.3f, 3, 3);
+        UploadMesh(&pebble, false);
+        Model pebbleModel = LoadModelFromMesh(pebble);
+        pebbleModel.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = { 110, 90, 72, 255 };
+        rockModels_.push_back(pebbleModel);
+    }
+
+    void drawGround(const std::vector<Position>& path, const std::vector<Rock>& rocks,
+                    int regionOriginX, int regionOriginY, int regionW, int regionH) {
         if (regionModel_.meshes != nullptr)
             DrawModel(regionModel_, { 0, 0, 0 }, 1.0f, WHITE);
 
+        drawRocks_(rocks, regionOriginX, regionOriginY, regionW, regionH);
         drawMicroPath_(path);
+    }
+
+    void drawRocks_(const std::vector<Rock>& rocks, int originX, int originY, int w, int h) {
+        if (rockModels_.empty())
+            generateRockModels_();
+
+        for (size_t i = 0; i < rocks.size(); ++i) {
+            const Rock& rock = rocks[i];
+            int localX = static_cast<int>(rock.x) - originX;
+            int localZ = static_cast<int>(rock.y) - originY;
+            if (localX < 0 || localZ < 0 || localX >= w || localZ >= h) continue;
+
+            // Count nearby rocks for cluster bonus
+            int clusterCount = 0;
+            for (size_t j = 0; j < rocks.size(); ++j) {
+                if (i == j) continue;
+                double dx = rocks[j].x - rock.x;
+                double dy = rocks[j].y - rock.y;
+                double dist = std::sqrt(dx * dx + dy * dy);
+                if (dist < rock.haloRadius + rocks[j].haloRadius) clusterCount++;
+            }
+
+            float rx = offsetX_ + static_cast<float>(rock.x - originX) * CELL_SIZE;
+            float rz = offsetZ_ + static_cast<float>(rock.y - originY) * CELL_SIZE;
+
+            // Interpolate terrain height at exact rock position
+            float fx = static_cast<float>(rock.x - originX);
+            float fz = static_cast<float>(rock.y - originY);
+            int x0 = std::clamp(static_cast<int>(fx), 0, w - 1);
+            int z0 = std::clamp(static_cast<int>(fz), 0, h - 1);
+            int x1 = std::min(x0 + 1, w - 1);
+            int z1 = std::min(z0 + 1, h - 1);
+            float tx = fx - static_cast<float>(x0);
+            float tz = fz - static_cast<float>(z0);
+            float h00 = heightAt(regionModel_, x0, z0);
+            float h10 = heightAt(regionModel_, x1, z0);
+            float h01 = heightAt(regionModel_, x0, z1);
+            float h11 = heightAt(regionModel_, x1, z1);
+            float ry = (h00 * (1 - tx) + h10 * tx) * (1 - tz) +
+                       (h01 * (1 - tx) + h11 * tx) * tz;
+
+            float baseScale = static_cast<float>(rock.coreRadius) * 0.55f;
+            if (baseScale < 0.35f) baseScale = 0.35f;
+            float scale = baseScale * (1.0f + clusterCount * 0.2f);
+            if (scale > baseScale * 1.8f) scale = baseScale * 1.8f;
+
+            size_t idx = static_cast<size_t>(localX * 31 + localZ * 17);
+            const Model& rockModel = rockModels_[idx % rockModels_.size()];
+
+            float rotY = static_cast<float>((idx * 53) % 360);
+
+            DrawModelEx(rockModel, { rx, ry, rz },
+                        { 0, 1, 0 }, rotY,
+                        { scale, scale * 0.95f, scale },
+                        WHITE);
+
+            // Scatter pebbles in the halo (walkable rough zone)
+            const Model& pebbleModel = rockModels_.back();
+            float haloR = static_cast<float>(rock.haloRadius);
+            int pebbleCount = std::min(static_cast<int>(rock.haloRadius * 3), 8);
+            unsigned int seed = static_cast<unsigned int>(i * 2654435761u);
+
+            for (int p = 0; p < pebbleCount; ++p) {
+                seed = seed * 1103515245u + 12345u;
+                float angle = static_cast<float>(seed) / 4294967295.0f * 6.28318f;
+                seed = seed * 1103515245u + 12345u;
+                float dist = baseScale + (static_cast<float>(seed) / 4294967295.0f) *
+                             (haloR - baseScale);
+                if (dist <= baseScale) continue;
+
+                float px = rx + std::cos(angle) * dist;
+                float pz = rz + std::sin(angle) * dist;
+
+                int pcx = std::clamp(static_cast<int>(fx + std::cos(angle) * dist), 0, w - 1);
+                int pcz = std::clamp(static_cast<int>(fz + std::sin(angle) * dist), 0, h - 1);
+                float py = heightAt(regionModel_, pcx, pcz);
+
+                seed = seed * 1103515245u + 12345u;
+                float pscale = 0.2f + (static_cast<float>(seed) / 4294967295.0f) * 0.3f;
+                float prot = static_cast<float>((seed >> 8) % 360);
+
+                DrawModelEx(pebbleModel, { px, py, pz },
+                            { 0, 1, 0 }, prot,
+                            { pscale, pscale * 0.5f, pscale },
+                            WHITE);
+            }
+        }
     }
 
     void drawMicroPath_(const std::vector<Position>& path) {
@@ -449,13 +593,14 @@ struct Renderer {
         return c.absolute_elevation * heightScale + c.craterDelta * craterScale;
     }
 
-    float heightAt(const Model& model, int x, int z) const {
+    float heightAt(const Model& model, int cellX, int cellZ) const {
         if (model.meshes == nullptr) return 0.0f;
         Mesh& m = model.meshes[0];
-        int w = static_cast<int>(std::sqrt(static_cast<float>(m.vertexCount)));
-        x = std::clamp(x, 0, w - 1);
-        z = std::clamp(z, 0, w - 1);
-        return m.vertices[(z * w + x) * 3 + 1];
+        int meshW = static_cast<int>(std::sqrt(static_cast<float>(m.vertexCount)));
+        // Map cell coords to subdivided mesh coords
+        int mx = std::clamp(cellX * SUBDIV, 0, meshW - 1);
+        int mz = std::clamp(cellZ * SUBDIV, 0, meshW - 1);
+        return m.vertices[(mz * meshW + mx) * 3 + 1];
     }
 
     float globalX(int cell) const { return offsetX_ + static_cast<float>(cell) * CELL_SIZE; }
@@ -480,6 +625,9 @@ struct Renderer {
     void unload() {
         unloadChunks();
         unloadRegion();
+        for (auto& m : rockModels_)
+            UnloadModel(m);
+        rockModels_.clear();
     }
 
     ~Renderer() { unload(); }

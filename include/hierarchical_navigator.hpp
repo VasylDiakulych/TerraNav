@@ -276,6 +276,27 @@ struct HierarchicalNavigator {
         microPath = nav->replan(droneLocal, goal);
     }
 
+    // Toggle a wall on the current region's cell. D* Lite will replan around it.
+    void toggleWall(int localX, int localY) {
+        if (!nav || localX < 0 || localY < 0) return;
+        int w = nav->width_;
+        int h = nav->height_;
+        if (localX >= w || localY >= h) return;
+
+        Cell& c = nav->currentState_[localX, localY];
+        if (!c.is_visited) return;
+
+        c.is_impassable = !c.is_impassable;
+
+        // Force D* to replan by updating affected vertices
+        nav->updateVertex({localX, localY});
+        for (const auto& n : nav->getNeighbors({localX, localY}))
+            nav->updateVertex(n);
+
+        Position goal = microPath.back();
+        microPath = nav->replan(droneLocal, goal);
+    }
+
     Region getExploredRegion() const {
         int w = static_cast<int>(groundTruth->gen.regionWidth_);
         int h = static_cast<int>(groundTruth->gen.regionHeight_);
