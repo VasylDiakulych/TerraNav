@@ -1,0 +1,9 @@
+.opencode
+.clangd
+.zed
+build/
+AGENTS.md
+D* Project plan.md
+app
+*.ghc
+.cache

@@ -2,14 +2,18 @@
 #include <raymath.h>
 
 #define RAYGUI_IMPLEMENTATION
-#include "../../third_party/raygui.h"
+#include <raygui.h>
 
-#include <climits>
-#include <cstdio>
+#define RLIGHTS_IMPLEMENTATION
+#include "../../third_party/rlights.h"
+
 #include <memory>
+#include <algorithm>
+#include <vector>
 
 #include "../../include/terrain_generation.hpp"
-#include "../../include/chunk_renderer.hpp"
+#include "../../include/renderer.hpp"
+#include "../../include/controls.hpp"
 
 namespace {
 
@@ -68,160 +72,303 @@ void updateFreeCamera(Camera3D& cam, float moveSpeed) {
     }
 }
 
+Region makeExploredRegion(const Map& map, size_t regionIdx,
+                          int droneX, int droneZ, float sensorRange) {
+    Region reg = map.tiles[regionIdx];
+
+    int r = static_cast<int>(std::ceil(sensorRange)) + 1;
+    float edgeWidth = 1.5f;
+
+    for (int dy = -r; dy <= r; ++dy) {
+        for (int dx = -r; dx <= r; ++dx) {
+            int x = droneX + dx;
+            int y = droneZ + dy;
+            if (x < 0 || y < 0 || x >= reg.width || y >= reg.height) continue;
+
+            float dist = std::sqrt(static_cast<float>(dx * dx + dy * dy));
+            if (dist > sensorRange + edgeWidth) continue;
+
+            if (dist > sensorRange) {
+                float t = 1.0f - (dist - sensorRange) / edgeWidth;
+                reg[x, y].is_visited = true;
+                reg[x, y].roughness = reg[x, y].roughness * (1.0f - t * 0.5f);
+            } else {
+                reg[x, y].is_visited = true;
+            }
+        }
+    }
+    return reg;
+}
+
 } // namespace
 
 int main(void) {
     const int screenWidth = 1280;
     const int screenHeight = 720;
 
-    InitWindow(screenWidth, screenHeight, "TerraNav 3D");
+    InitWindow(screenWidth, screenHeight, "TerraNav");
     SetTargetFPS(60);
     SetExitKey(0);
 
+    // --- Shader + lighting ---
+    Shader lightingShader = LoadShader("src/visualization/shaders/lighting.vs",
+                                        "src/visualization/shaders/lighting.fs");
+    lightingShader.locs[SHADER_LOC_VECTOR_VIEW] = GetShaderLocation(lightingShader, "viewPos");
+    int ambientLoc = GetShaderLocation(lightingShader, "ambient");
+    float ambient[] = { 0.15f, 0.14f, 0.12f, 1.0f };
+    SetShaderValue(lightingShader, ambientLoc, ambient, SHADER_UNIFORM_VEC4);
+
+    float fogColor[] = { 0.78f, 0.67f, 0.49f, 1.0f };
+    SetShaderValue(lightingShader, GetShaderLocation(lightingShader, "fogColor"),
+                   fogColor, SHADER_UNIFORM_VEC4);
+    float fogDensity = 0.0f;
+    SetShaderValue(lightingShader, GetShaderLocation(lightingShader, "fogDensity"),
+                   &fogDensity, SHADER_UNIFORM_FLOAT);
+
+    Light sunLight = CreateLight(LIGHT_DIRECTIONAL,
+                                  { 50.0f, 100.0f, 30.0f },
+                                  { 0.0f, 0.0f, 0.0f },
+                                  { 200, 180, 150, 255 },
+                                  lightingShader);
+
+    // --- Map generation ---
     constexpr size_t REGIONS_X = 16;
     constexpr size_t REGIONS_Y = 16;
     constexpr size_t REGION_W = 64;
     constexpr size_t REGION_H = 64;
 
-    CraterParams craterParams;
-    craterParams.maxCountPerRegion = 1;
-    craterParams.minRadius = 3.0;
-    craterParams.maxRadius = 20.0;
-    craterParams.depthFactor = 0.04;
-    craterParams.rimRatio = 0.25;
-    craterParams.rimWidth = 0.4;
-
-    auto map = std::make_unique<Map>(42, REGIONS_X, REGIONS_Y, REGION_W, REGION_H,
-                                     NoiseParams{}, craterParams);
-    map->generate();
-
-    TerrainRenderer renderer;
-    renderer.heightScale = 375.0f;
-    renderer.craterScale = 375.0f;
-
-    float terrainHalf = (REGIONS_X * REGION_W) * 0.5f * CELL_SIZE;
-
-    Camera3D camera{};
-    camera.position = { terrainHalf * 1.2f, terrainHalf * 0.8f, terrainHalf * 1.2f };
-    camera.target = { 0.0f, 0.0f, 0.0f };
-    camera.up = { 0.0f, 1.0f, 0.0f };
-    camera.fovy = 45.0f;
-    camera.projection = CAMERA_PERSPECTIVE;
+    CraterParams craterParams {
+        .maxCountPerRegion = 1,
+        .minRadius = 0.5,
+        .maxRadius = 20.0,
+        .depthFactor = 0.01,
+        .rimRatio = 0.1,
+        .rimWidth = 0.4,
+    };
 
     int seedValue = 42;
-    bool seedEdit = false;
-    float renderDistance = 8000.0f;
-    float prevHeightScale = renderer.heightScale;
-    float prevCraterScale = renderer.craterScale;
-    float rebuildTimer = 0.0f;
-    bool uiMode = false;
-    bool showGrid = false;
-    bool autoRotate = false;
+
+    auto map = std::make_unique<Map>(
+        seedValue,
+        REGIONS_X, REGIONS_Y,
+        REGION_W, REGION_H,
+        NoiseParams{},
+        craterParams
+    );
+
+    map->generate();
+
+    float mapHalf = static_cast<float>(REGIONS_X * REGION_W) * 0.5f * CELL_SIZE;
+
+    // --- Renderer ---
+    Renderer renderer {
+        .heightScale = 75.0f,
+        .craterScale = 75.0f,
+    };
+
+    auto setupMaterial = [&]() {
+        for (auto& model : renderer.chunkModels_)
+            model.materials[0].shader = lightingShader;
+        if (renderer.regionModel_.meshes != nullptr)
+            renderer.regionModel_.materials[0].shader = lightingShader;
+    };
+
+    // Build full-map chunk meshes for satellite mode
+    renderer.rebuildAll(*map);
+    setupMaterial();
+
+    // --- Current region for ground view ---
+    int currentRegionX = static_cast<int>(REGIONS_X) / 2;
+    int currentRegionY = static_cast<int>(REGIONS_Y) / 2;
+    size_t currentRegionIdx = static_cast<size_t>(currentRegionY) * map->width_
+                            + static_cast<size_t>(currentRegionX);
+
+    int droneCellX = static_cast<int>(REGION_W) / 2;
+    int droneCellZ = static_cast<int>(REGION_H) / 2;
+    float sensorRange = 7.0f;
+
+    // Global drone position (for satellite marker)
+    int droneGlobalX = currentRegionX * static_cast<int>(REGION_W) + droneCellX;
+    int droneGlobalZ = currentRegionY * static_cast<int>(REGION_H) + droneCellZ;
+
+    Region exploredReg = makeExploredRegion(*map, currentRegionIdx,
+                                            droneCellX, droneCellZ, sensorRange);
+    renderer.rebuildRegion(exploredReg, true);
+    setupMaterial();
+
+    // --- Drone + markers ---
+    Mesh droneMesh = GenMeshSphere(0.5f, 16, 16);
+    Model droneModel = LoadModelFromMesh(droneMesh);
+    droneModel.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = { 100, 200, 255, 255 };
+
+    Position startPos{ .x = 5, .y = 5 };
+    Position goalPos{ .x = static_cast<int>(REGION_W) - 5,
+                     .y = static_cast<int>(REGION_H) - 5 };
+
+    Model startMarker = LoadModelFromMesh(GenMeshCube(0.8f, 1.5f, 0.8f));
+    startMarker.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = { 80, 255, 80, 255 };
+
+    Model goalMarker = LoadModelFromMesh(GenMeshCube(0.8f, 1.5f, 0.8f));
+    goalMarker.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = { 255, 80, 80, 255 };
+
+    // --- Cameras ---
+    Camera3D groundCamera{
+        .position = { 55.0f, 80.0f, 55.0f },
+        .target = { 0.0f, 0.0f, 0.0f },
+        .up = { 0.0f, 1.0f, 0.0f },
+        .fovy = 45.0f,
+        .projection = CAMERA_PERSPECTIVE,
+    };
+
+    Camera3D satelliteCamera{
+        .position = { mapHalf * 0.8f, mapHalf * 0.8f, mapHalf * 0.8f },
+        .target = { 0.0f, 0.0f, 0.0f },
+        .up = { 0.0f, 1.0f, 0.0f },
+        .fovy = 45.0f,
+        .projection = CAMERA_PERSPECTIVE,
+    };
+
+    Camera3D camera = satelliteCamera;
+
+    // --- Controls ---
+    Controls controller {
+        .seedValue = seedValue,
+        .prevHeightScale = renderer.heightScale,
+        .prevCraterScale = renderer.craterScale,
+    };
 
     DisableCursor();
-    rlSetClipPlanes(0.05, renderDistance);
+    rlSetClipPlanes(0.05, controller.renderDistance);
 
-    const int panelX = 10;
-    const int panelY = 10;
-    const int panelW = 230;
+    RenderMode mode = RenderMode::Satellite;
+    bool showGates = true;
+    bool showGrid = true;
+    bool fogEnabled = true;
 
-    bool firstFrame = true;
+    // Empty path/gates — populated by hierarchical navigator later
+    std::vector<Position> microPath;
+    std::vector<int> macroPath;
+    std::vector<GateInfo> gates;
 
+    // --- Main loop ---
     while (!WindowShouldClose()) {
-        if (firstFrame) {
-            renderer.rebuildAll(*map);
-            firstFrame = false;
+        // TAB: toggle render mode
+        if (IsKeyPressed(KEY_TAB)) {
+            mode = (mode == RenderMode::Ground) ? RenderMode::Satellite : RenderMode::Ground;
+            camera = (mode == RenderMode::Satellite) ? satelliteCamera : groundCamera;
         }
 
-        if (IsKeyPressed(KEY_ESCAPE)) {
-            uiMode = !uiMode;
-            if (uiMode) EnableCursor();
-            else DisableCursor();
-        }
-        if (IsKeyPressed(KEY_R)) camera.target = { 0.0f, 0.0f, 0.0f };
+        if (IsKeyPressed(KEY_G)) showGates = !showGates;
+        if (IsKeyPressed(KEY_F)) showGrid = !showGrid;
+        if (IsKeyPressed(KEY_H)) { fogEnabled = !fogEnabled; renderer.regionDirty_ = true; }
 
-        if (!uiMode || autoRotate) {
-            if (autoRotate)
+        controller.handleEscape();
+
+        if (IsKeyPressed(KEY_R)) {
+            camera = (mode == RenderMode::Satellite) ? satelliteCamera : groundCamera;
+        }
+
+        if (!controller.uiMode || controller.autoRotate) {
+            if (controller.autoRotate)
                 UpdateCamera(&camera, CAMERA_ORBITAL);
             else
-                updateFreeCamera(camera, terrainHalf * 0.15f);
+                updateFreeCamera(camera, mode == RenderMode::Satellite ? mapHalf * 0.15f : 20.0f);
         }
 
-        if (rebuildTimer > 0.0f) {
-            rebuildTimer -= GetFrameTime();
-            if (rebuildTimer <= 0.0f) {
-                rebuildTimer = 0.0f;
-                renderer.markAllDirty();
-                renderer.rebuildDirty(*map);
-                prevHeightScale = renderer.heightScale;
-                prevCraterScale = renderer.craterScale;
-            }
+        Vector3 viewPos = camera.position;
+        SetShaderValue(lightingShader, lightingShader.locs[SHADER_LOC_VECTOR_VIEW],
+                       &viewPos, SHADER_UNIFORM_VEC3);
+
+        // Rebuild on parameter change
+        if (controller.update(renderer.heightScale, renderer.craterScale)) {
+            renderer.markAllDirty();
+            renderer.rebuildDirty(*map);
+            setupMaterial();
+            renderer.regionDirty_ = true;
+            controller.prevHeightScale = renderer.heightScale;
+            controller.prevCraterScale = renderer.craterScale;
         }
 
-        BeginDrawing();
-
-        ClearBackground({ 199, 170, 125, 255 });
-
-        BeginMode3D(camera);
-            renderer.draw();
-            if (showGrid)
-                renderer.drawGrid(*map);
-        EndMode3D();
-
-        float y = panelY + 35;
-        GuiPanel({ panelX, panelY, panelW, 370 }, "TerraNav Controls");
-
-        GuiLabel({ panelX + 15, y, 80, 20 }, "Elevation:");
-        GuiSlider({ panelX + 100, y, 110, 20 }, NULL, NULL, &renderer.heightScale, 1.0f, 1500.0f);
-        if (renderer.heightScale != prevHeightScale) {
-            rebuildTimer = 0.5f;
-            prevHeightScale = renderer.heightScale;
+        if (renderer.regionDirty_) {
+            renderer.rebuildRegion(exploredReg, fogEnabled);
+            setupMaterial();
         }
-        y += 30;
 
-        GuiLabel({ panelX + 15, y, 80, 20 }, "Craters:");
-        GuiSlider({ panelX + 100, y, 110, 20 }, NULL, NULL, &renderer.craterScale, 0.0f, 1500.0f);
-        if (renderer.craterScale != prevCraterScale) {
-            rebuildTimer = 0.5f;
-            prevCraterScale = renderer.craterScale;
-        }
-        y += 30;
+        rlSetClipPlanes(0.05, controller.renderDistance);
 
-        GuiLabel({ panelX + 15, y, 80, 20 }, "Render:");
-        GuiSlider({ panelX + 100, y, 110, 20 }, NULL, NULL, &renderDistance, 500.0f, 20000.0f);
-        rlSetClipPlanes(0.05, renderDistance);
-        y += 30;
-
-        GuiCheckBox({ panelX + 15, y, 20, 20 }, "Grid Overlay", &showGrid);
-        y += 28;
-
-        GuiCheckBox({ panelX + 15, y, 20, 20 }, "Auto-rotate", &autoRotate);
-        y += 28;
-
-        GuiLabel({ panelX + 15, y, 80, 20 }, "Seed:");
-        if (GuiSpinner({ panelX + 100, y, 110, 25 }, NULL, &seedValue, 0, INT_MAX, seedEdit))
-            seedEdit = !seedEdit;
-        y += 35;
-
-        if (GuiButton({ panelX + 15, y, 200, 30 }, "Regenerate")) {
-            map = std::make_unique<Map>(static_cast<long long>(seedValue),
-                                        REGIONS_X, REGIONS_Y, REGION_W, REGION_H,
-                                        NoiseParams{}, craterParams);
+        // Regenerate map
+        if (controller.consumeRegenerate()) {
+            map = std::make_unique<Map>(
+                static_cast<long long>(controller.seedValue),
+                REGIONS_X, REGIONS_Y,
+                REGION_W, REGION_H,
+                NoiseParams{}, craterParams
+            );
             map->generate();
             renderer.rebuildAll(*map);
+            setupMaterial();
+            exploredReg = makeExploredRegion(*map, currentRegionIdx,
+                                            droneCellX, droneCellZ, sensorRange);
+            renderer.regionDirty_ = true;
         }
 
-        int cols = static_cast<int>(map->width_ * map->gen.regionWidth_);
-        int rows = static_cast<int>(map->height_ * map->gen.regionHeight_);
-        GuiStatusBar({ 0, screenHeight - 25, screenWidth, 25 },
-            TextFormat("FPS: %d  |  Verts: %d  |  Tris: %d  |  Rocks: %zu  |  Chunks: %zu  |  %s  |  WASD: move  |  Space/Shift: up/down  |  R: recenter",
-                       GetFPS(), cols * rows, (cols - 1) * (rows - 1) * 2,
-                       map->rocks.size(), renderer.chunkModels_.size(),
-                       uiMode ? "ESC: resume freecam" : "ESC: show UI"));
+        // --- Drawing ---
+        BeginDrawing();
+
+            ClearBackground({ 199, 170, 125, 255 });
+
+            BeginMode3D(camera);
+                if (mode == RenderMode::Satellite) {
+                    renderer.drawSatellite(*map, showGates, showGrid, gates, macroPath,
+                                           static_cast<int>(REGIONS_X),
+                                           static_cast<int>(REGIONS_Y),
+                                           droneGlobalX, droneGlobalZ);
+                } else {
+                    renderer.drawGround(microPath);
+
+                    float dx = renderer.globalX(droneCellX);
+                    float dz = renderer.globalZ(droneCellZ);
+                    float dy = renderer.heightAt(exploredReg[droneCellX, droneCellZ]) + CELL_SIZE * 0.5f;
+                    DrawModel(droneModel, { dx, dy, dz }, 1.0f, WHITE);
+
+                    float sx = renderer.globalX(startPos.x);
+                    float sz = renderer.globalZ(startPos.y);
+                    float sy = renderer.heightAt(exploredReg[startPos.x, startPos.y]) + 0.4f;
+                    DrawModel(startMarker, { sx, sy, sz }, 1.0f, WHITE);
+
+                    float gx = renderer.globalX(goalPos.x);
+                    float gz = renderer.globalZ(goalPos.y);
+                    float gy = renderer.heightAt(exploredReg[goalPos.x, goalPos.y]) + 0.4f;
+                    DrawModel(goalMarker, { gx, gy, gz }, 1.0f, WHITE);
+
+                    DrawCircle3D({ dx, dy, dz }, sensorRange, { 1.0f, 0.0f, 0.0f }, 90.0f,
+                                 { 100, 200, 255, 100 });
+                }
+            EndMode3D();
+
+            int cols = static_cast<int>(REGION_W);
+            int rows = static_cast<int>(REGION_H);
+            controller.draw(
+                &renderer.heightScale, &renderer.craterScale,
+                screenWidth, screenHeight,
+                renderer.chunkModels_.size(),
+                map->rocks.size(),
+                cols * rows,
+                (cols - 1) * (rows - 1) * 2
+            );
+
+            const char* modeText = (mode == RenderMode::Satellite) ? "SATELLITE" : "GROUND";
+            DrawText(modeText, screenWidth - 120, 15, 20, { 255, 255, 255, 220 });
+            DrawText("TAB: switch", screenWidth - 120, 40, 14, { 200, 200, 200, 180 });
+            DrawText("G: gates  F: grid  H: fog", screenWidth - 160, 58, 14, { 200, 200, 200, 180 });
 
         EndDrawing();
     }
 
+    UnloadModel(droneModel);
+    UnloadModel(startMarker);
+    UnloadModel(goalMarker);
+    UnloadShader(lightingShader);
     renderer.unload();
     CloseWindow();
     return 0;

@@ -1088,6 +1088,9 @@ typedef enum {
 
 #endif // RAYGUI_H
 
+#ifndef RAYGUI_IMPLEMENTATION_GUARD
+#define RAYGUI_IMPLEMENTATION_GUARD
+
 /***********************************************************************************
 *
 *   RAYGUI IMPLEMENTATION
@@ -6051,3 +6054,4 @@ static int GetCodepointNext(const char *text, int *codepointSize)
 #endif      // RAYGUI_STANDALONE
 
 #endif      // RAYGUI_IMPLEMENTATION
+#endif      // RAYGUI_IMPLEMENTATION_GUARD
