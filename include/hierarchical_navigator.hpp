@@ -94,10 +94,18 @@ struct HierarchicalNavigator {
             );
         };
 
-        auto scan = [this](Position robot, const Region& state) -> std::vector<Position> {
+        auto scan = [this, originX, originY](Position robot, const Region& state) -> std::vector<Position> {
             std::vector<Position> result;
             int r = static_cast<int>(std::ceil(sensorRange));
             float r2 = sensorRange * sensorRange;
+
+            auto trueElev = [this, originX, originY](int lx, int ly) -> float {
+                const Cell& c = groundTruth->cellAt(
+                    static_cast<size_t>(originX + lx),
+                    static_cast<size_t>(originY + ly)
+                );
+                return c.combinedElevation() + (c.is_rock ? 0.15f : 0.0f);
+            };
 
             for (int dy = -r; dy <= r; ++dy) {
                 for (int dx = -r; dx <= r; ++dx) {
@@ -105,7 +113,9 @@ struct HierarchicalNavigator {
                     if (tx < 0 || ty < 0 || tx >= state.width || ty >= state.height) continue;
                     if (static_cast<float>(dx * dx + dy * dy) > r2) continue;
                     if (state[tx, ty].is_visited) continue;
-                    result.push_back({.x = tx, .y = ty, .direction = 0.0f});
+                    Position target{.x = tx, .y = ty, .direction = 0.0f};
+                    if (!lineOfSight(state.width, state.height, robot, target, trueElev, 0.05f)) continue;
+                    result.push_back(target);
                 }
             }
             return result;

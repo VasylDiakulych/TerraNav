@@ -81,6 +81,10 @@ struct Renderer {
     Model regionModel_{};
     bool regionDirty_ = true;
 
+    // Wall flash effect
+    Position flashCell_{-1, -1};
+    float flashTimer_ = 0.0f;
+
     // Rock models (variations)
     std::vector<Model> rockModels_;
 
@@ -466,12 +470,32 @@ struct Renderer {
     }
 
     void drawGround(const std::vector<Position>& path, const std::vector<Rock>& rocks,
-                    int regionOriginX, int regionOriginY, int regionW, int regionH) {
+                    int regionOriginX, int regionOriginY, int regionW, int regionH,
+                    const Region& reg) {
         if (regionModel_.meshes != nullptr)
             DrawModel(regionModel_, { 0, 0, 0 }, 1.0f, WHITE);
 
         drawRocks_(rocks, regionOriginX, regionOriginY, regionW, regionH);
         drawMicroPath_(path);
+        drawFlash_(reg);
+    }
+
+    void triggerFlash(int cellX, int cellZ) {
+        flashCell_ = {cellX, cellZ};
+        flashTimer_ = 0.5f;
+    }
+
+    void updateFlash(float dt) {
+        if (flashTimer_ > 0.0f) flashTimer_ -= dt;
+    }
+
+    void drawFlash_(const Region& reg) {
+        if (flashTimer_ <= 0.0f || flashCell_.x < 0) return;
+        float alpha = std::clamp(flashTimer_ / 0.5f, 0.0f, 1.0f);
+        float x = globalX(flashCell_.x);
+        float z = globalZ(flashCell_.y);
+        float y = heightAt(reg[flashCell_.x, flashCell_.y]);
+        DrawCube({x, y + 0.5f, z}, 1.0f, 2.0f, 1.0f, {255, 255, 100, static_cast<unsigned char>(alpha * 255)});
     }
 
     void drawRocks_(const std::vector<Rock>& rocks, int originX, int originY, int w, int h) {

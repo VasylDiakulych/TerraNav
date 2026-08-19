@@ -30,8 +30,8 @@ struct CraterParams {
 };
 
 struct RockParams {
-    size_t maxClustersPerRegion{14};
-    size_t maxRocksPerCluster{20};
+    size_t maxClustersPerRegion{2};
+    size_t maxRocksPerCluster{10};
     double clusterSpread{6.0};
     double minCoreRadius{0.5};
     double maxCoreRadius{5};

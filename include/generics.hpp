@@ -152,6 +152,38 @@ inline bool lineOfSight(const Region& state, int width, int height,
     return true;
 }
 
+// Line-of-sight using a probe function for elevation (reads ground truth)
+template<typename ElevFn>
+requires requires(ElevFn f, int x, int y) { { f(x, y) } -> std::convertible_to<float>; }
+inline bool lineOfSight(int width, int height, Position from, Position to, ElevFn elev, float sensorHeight = 0.0f) {
+    int x0 = from.x, y0 = from.y, x1 = to.x, y1 = to.y;
+    int dx = std::abs(x1 - x0), dy = std::abs(y1 - y0);
+    int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    int err = dx - dy;
+    int x = x0, y = y0;
+
+    float totalSq = static_cast<float>((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+    if (totalSq == 0.0f) return true;
+
+    float eFrom = elev(x0, y0) + sensorHeight;
+    float eTo   = elev(x1, y1);
+
+    while (true) {
+        if (x == x1 && y == y1) break;
+
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x += sx; }
+        if (e2 <  dx) { err += dx; y += sy; }
+        if (x == x1 && y == y1) break;
+        if (x < 0 || y < 0 || x >= width || y >= height) continue;
+        float t = ((x - x0) * (x1 - x0) + (y - y0) * (y1 - y0)) / totalSq;
+        float lineH = eFrom + t * (eTo - eFrom);
+        if (elev(x, y) > lineH) return false;
+    }
+
+    return true;
+}
+
 // reveals all cells in a disk of randius sensor_range aroung robot
 inline auto defaultScan(float sensor_range) {
     return [sensor_range](Position robot, const Region& state) -> std::vector<Position> {

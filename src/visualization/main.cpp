@@ -106,6 +106,47 @@ Position pickTerrainCell(const Camera3D& camera, const Renderer& renderer,
     return {-1, -1};
 }
 
+void centerAtDroneSat(Camera3D& satelliteCamera,
+                      const Renderer& renderer, const Map& map,
+                      const HierarchicalNavigator& hNav) {
+    float dx = renderer.satOffsetX_ + static_cast<float>(hNav.getDroneGlobalX()) * CELL_SIZE;
+    float dz = renderer.satOffsetZ_ + static_cast<float>(hNav.getDroneGlobalZ()) * CELL_SIZE;
+    float dy = renderer.heightAt(map, hNav.getDroneGlobalX(), hNav.getDroneGlobalZ());
+    satelliteCamera.position = { dx + 200.0f, dy + 300.0f, dz + 200.0f };
+    satelliteCamera.target = { dx, dy, dz };
+}
+
+void centerAtDroneGround(Camera3D& groundCamera,
+                         const Renderer& renderer, const Map& map,
+                         const HierarchicalNavigator& hNav) {
+    float dx = renderer.globalX(hNav.droneLocal.x);
+    float dz = renderer.globalZ(hNav.droneLocal.y);
+    float dy = renderer.heightAt(map, hNav.getDroneGlobalX(), hNav.getDroneGlobalZ());
+    groundCamera.target = { dx, dy, dz };
+    groundCamera.position = { dx + 55.0f, dy + 80.0f, dz + 55.0f };
+}
+
+Position pickSatelliteCell(const Camera3D& camera, const Renderer& renderer,
+                           const Map& map, int mapCols, int mapRows) {
+    Ray ray = GetMouseRay(GetMousePosition(), camera);
+    Vector3 pos = ray.position;
+    Vector3 dir = ray.direction;
+    float step = 1.0f;
+    int maxSteps = 4000;
+
+    for (int i = 0; i < maxSteps; ++i) {
+        pos = Vector3Add(pos, Vector3Scale(dir, step));
+        float cellXF = (pos.x - renderer.satOffsetX_) / CELL_SIZE;
+        float cellZF = (pos.z - renderer.satOffsetZ_) / CELL_SIZE;
+        int cx = static_cast<int>(std::floor(cellXF));
+        int cz = static_cast<int>(std::floor(cellZF));
+        if (cx < 0 || cz < 0 || cx >= mapCols || cz >= mapRows) continue;
+        float terrainY = renderer.heightAt(map, cx, cz);
+        if (pos.y <= terrainY) return {cx, cz};
+    }
+    return {-1, -1};
+}
+
 } // namespace
 
 int main(void) {
@@ -115,6 +156,11 @@ int main(void) {
     InitWindow(screenWidth, screenHeight, "TerraNav");
     SetTargetFPS(60);
     SetExitKey(0);
+    SetWindowState(FLAG_WINDOW_RESIZABLE);
+
+    GuiLoadStyle("src/visualization/styles/style_cherry.rgs");
+    SetTextureFilter(GuiGetFont().texture, TEXTURE_FILTER_BILINEAR);
+    GuiSetStyle(DEFAULT, TEXT_SPACING, 2);
 
     // --- Shader + lighting ---
     Shader lightingShader = LoadShader("src/visualization/shaders/lighting.vs",
@@ -237,25 +283,25 @@ int main(void) {
     rlSetClipPlanes(0.05, controller.renderDistance);
 
     RenderMode mode = RenderMode::Satellite;
-    bool showGates = true;
-    bool showGrid = true;
+    bool showGates = false;
+    bool showGrid = false;
     bool fogEnabled = true;
 
     float tickTimer = 0.0f;
-    float tickInterval = 0.3f;
     bool paused = true;
+
+    int clickRegionX = -1, clickRegionY = -1;
+    bool setStartMode = false, setGoalMode = false;
 
     // --- Main loop ---
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_TAB)) {
             mode = (mode == RenderMode::Ground) ? RenderMode::Satellite : RenderMode::Ground;
             if (mode == RenderMode::Satellite) {
-                float dx = renderer.satOffsetX_ + static_cast<float>(hNav.getDroneGlobalX()) * CELL_SIZE;
-                float dz = renderer.satOffsetZ_ + static_cast<float>(hNav.getDroneGlobalZ()) * CELL_SIZE;
-                satelliteCamera.position = { dx + 200.0f, 200.0f, dz + 200.0f };
-                satelliteCamera.target = { dx, 0.0f, dz };
+                centerAtDroneSat(satelliteCamera, renderer, *map, hNav);
                 camera = satelliteCamera;
             } else {
+                centerAtDroneGround(groundCamera, renderer, *map, hNav);
                 camera = groundCamera;
             }
         }
@@ -264,9 +310,35 @@ int main(void) {
         if (IsKeyPressed(KEY_F)) showGrid = !showGrid;
         if (IsKeyPressed(KEY_H)) { fogEnabled = !fogEnabled; renderer.regionDirty_ = true; }
 
+        if (IsKeyPressed(KEY_ONE)) { setStartMode = !setStartMode; setGoalMode = false; }
+        if (IsKeyPressed(KEY_TWO)) { setGoalMode = !setGoalMode; setStartMode = false; }
+
+        if (mode == RenderMode::Satellite && (setStartMode || setGoalMode) &&
+            controller.uiMode && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            int mapCols = static_cast<int>(REGIONS_X * REGION_W);
+            int mapRows = static_cast<int>(REGIONS_Y * REGION_H);
+            Position picked = pickSatelliteCell(camera, renderer, *map, mapCols, mapRows);
+            if (picked.x >= 0) {
+                int rx = picked.x / static_cast<int>(REGION_W);
+                int ry = picked.y / static_cast<int>(REGION_H);
+                if (setStartMode) {
+                    startRegionX = rx; startRegionY = ry;
+                } else {
+                    goalRegionX = rx; goalRegionY = ry;
+                }
+                regionGraph.buildFromMap(*map);
+                hNav.init(map.get(), &regionGraph, startRegionX, startRegionY,
+                          goalRegionX, goalRegionY, sensorRange);
+                renderer.regionDirty_ = true;
+                setStartMode = false;
+                setGoalMode = false;
+            }
+        }
+
         // Play/pause
         if (IsKeyPressed(KEY_P)) { paused = !paused; hNav.running = !paused; }
         if (IsKeyPressed(KEY_N) && paused) { hNav.tick(); renderer.regionDirty_ = true; }
+        
         // Reset
         if (IsKeyPressed(KEY_Y)) {
             regionGraph.buildFromMap(*map);
@@ -285,6 +357,7 @@ int main(void) {
                                               static_cast<int>(REGION_H));
             if (picked.x >= 0) {
                 hNav.toggleWall(picked.x, picked.y);
+                renderer.triggerFlash(picked.x, picked.y);
                 renderer.regionDirty_ = true;
             }
         }
@@ -304,10 +377,12 @@ int main(void) {
         SetShaderValue(lightingShader, lightingShader.locs[SHADER_LOC_VECTOR_VIEW],
                        &viewPos, SHADER_UNIFORM_VEC3);
 
+        renderer.updateFlash(GetFrameTime());
+
         // Simulation tick
         if (!paused && !hNav.finished) {
             tickTimer += GetFrameTime();
-            if (tickTimer >= tickInterval) {
+            if (tickTimer >= controller.tickInterval) {
                 tickTimer = 0.0f;
                 hNav.tick();
                 renderer.regionDirty_ = true;
@@ -347,6 +422,11 @@ int main(void) {
             renderer.rebuildAll(*map);
             setupMaterial();
             renderer.regionDirty_ = true;
+
+            if (mode == RenderMode::Satellite)
+                centerAtDroneSat(satelliteCamera, renderer, *map, hNav);
+            else
+                centerAtDroneGround(groundCamera, renderer, *map, hNav);
         }
 
         // --- Drawing ---
@@ -369,7 +449,7 @@ int main(void) {
                     int regionH = static_cast<int>(REGION_H);
                     int originX = hNav.currentRegionX * regionW;
                     int originY = hNav.currentRegionY * regionH;
-                    renderer.drawGround(hNav.microPath, map->rocks, originX, originY, regionW, regionH);
+                    renderer.drawGround(hNav.microPath, map->rocks, originX, originY, regionW, regionH, exploredReg);
 
                     int droneX = hNav.droneLocal.x;
                     int droneZ = hNav.droneLocal.y;
@@ -394,7 +474,7 @@ int main(void) {
             int rows = static_cast<int>(REGION_H);
             controller.draw(
                 &renderer.heightScale, &renderer.craterScale,
-                screenWidth, screenHeight,
+                GetScreenWidth(), GetScreenHeight(),
                 renderer.chunkModels_.size(),
                 map->rocks.size(),
                 cols * rows,
@@ -402,17 +482,27 @@ int main(void) {
             );
 
             const char* modeText = (mode == RenderMode::Satellite) ? "SATELLITE" : "GROUND";
-            DrawText(modeText, screenWidth - 120, 15, 20, { 255, 255, 255, 220 });
-            DrawText("TAB: switch", screenWidth - 120, 40, 14, { 200, 200, 200, 180 });
-            DrawText("P: play/pause  N: step  Y: reset", screenWidth - 280, 58, 14, { 200, 200, 200, 180 });
-            DrawText("G: gates  F: grid  H: fog", screenWidth - 160, 76, 14, { 200, 200, 200, 180 });
+            const char* hints1 = "P: play/pause  N: step  Y: reset";
+            const char* hints2 = "G: gates  F: grid  H: fog  1: set start  2: set goal";
+            const char* hints3 = "TAB: switch";
+            int sw = GetScreenWidth();
+
+            GuiDrawText(modeText, {0, 15, static_cast<float>(sw - 10), 20}, TEXT_ALIGN_RIGHT, { 255, 255, 255, 220 });
+            GuiDrawText(hints3, {0, 40, static_cast<float>(sw - 10), 14}, TEXT_ALIGN_RIGHT, { 200, 200, 200, 180 });
+            GuiDrawText(hints1, {0, 58, static_cast<float>(sw - 10), 14}, TEXT_ALIGN_RIGHT, { 200, 200, 200, 180 });
+            GuiDrawText(hints2, {0, 76, static_cast<float>(sw - 10), 14}, TEXT_ALIGN_RIGHT, { 200, 200, 200, 180 });
 
             const char* stateText = paused ? "PAUSED" : (hNav.finished ? "DONE" : "RUNNING");
-            DrawText(stateText, 10, 10, 20, { 255, 255, 255, 220 });
-            DrawText(TextFormat("Region: (%d, %d)  Step: %d/%zu",
+            GuiDrawText(stateText, {10, 10, 200, 20}, TEXT_ALIGN_LEFT, { 255, 255, 255, 220 });
+            GuiDrawText(TextFormat("Region: (%d, %d)  Step: %d/%zu",
                                 hNav.currentRegionX, hNav.currentRegionY,
                                 hNav.currentStepIndex, hNav.macroPath.size()),
-                     10, 35, 16, { 255, 255, 255, 200 });
+                     {10, 38, 300, 16}, TEXT_ALIGN_LEFT, { 255, 255, 255, 200 });
+
+            if (setStartMode)
+                GuiDrawText("CLICK TO SET START", {10, 58, 250, 16}, TEXT_ALIGN_LEFT, { 255, 255, 100, 220 });
+            else if (setGoalMode)
+                GuiDrawText("CLICK TO SET GOAL", {10, 58, 250, 16}, TEXT_ALIGN_LEFT, { 255, 100, 100, 220 });
 
         EndDrawing();
     }

@@ -61,9 +61,10 @@ struct Controls {
     float prevCraterScale = 75.0f;
     float rebuildTimer = 0.0f;
     bool uiMode = false;
-    bool showGrid = false;
     bool autoRotate = false;
     bool regenerateClicked = false;
+    float tickInterval = 0.3f;
+    float speedSlider = 0.7f;
 
     void handleEscape() {
         if (IsKeyPressed(KEY_ESCAPE)) {
@@ -103,12 +104,13 @@ struct Controls {
         static constexpr const char* UI_MODE_FREECAM = "ESC: resume freecam";
         static constexpr const char* UI_MODE_UI = "ESC: show UI";
 
-        Panel panel{10.0f, 10.0f, 230.0f};
+        Panel panel{10.0f, 85.0f, 230.0f};
         panel.begin("TerraNav Controls", 370.0f);
         panel.slider("Elevation:", heightScale, 1.0f, 300.0f);
         panel.slider("Craters:", craterScale, 0.0f, 300.0f);
         panel.slider("Render:", &renderDistance, 500.0f, 20000.0f);
-        panel.checkBox("Grid Overlay", &showGrid);
+        panel.slider("Speed:", &speedSlider, 0.0f, 1.0f);
+        tickInterval = 2.02f - speedSlider * 2.0f;
         panel.checkBox("Auto-rotate", &autoRotate);
         panel.spinner("Seed:", &seedValue, 0, INT_MAX, &seedEdit);
         if (panel.button("Regenerate"))
