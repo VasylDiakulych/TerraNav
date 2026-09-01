@@ -34,20 +34,21 @@ endif()
 set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g")
 
+# raylib built from submodule
+set(PLATFORM Desktop CACHE STRING "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/raylib)
+
 # Common include paths
 set(INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/third_party
-    ${CMAKE_SOURCE_DIR}/third_party/raylib/include
 )
-
-# raylib link libraries
-set(RAYLIB_LIBS raylib GL m pthread dl rt X11)
 
 # --- Visualization ---
 add_executable(viz src/visualization/main.cpp)
 target_include_directories(viz PRIVATE ${INCLUDE_DIRS})
-target_link_libraries(viz PRIVATE ${RAYLIB_LIBS})
+target_link_libraries(viz PRIVATE raylib)
 
 # --- Map Generation ---
 add_executable(map_gen src/map_generation/main.cpp)
@@ -56,7 +57,7 @@ target_include_directories(map_gen PRIVATE ${INCLUDE_DIRS})
 # --- Benchmark ---
 add_executable(bench src/benchmark/main.cpp)
 target_include_directories(bench PRIVATE ${INCLUDE_DIRS})
-target_link_libraries(bench PRIVATE ${RAYLIB_LIBS})
+target_link_libraries(bench PRIVATE raylib)
 
 # Output binaries in build/
 set_target_properties(viz map_gen bench PROPERTIES
