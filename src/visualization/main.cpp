@@ -5,7 +5,7 @@
 #include <raygui.h>
 
 #define RLIGHTS_IMPLEMENTATION
-#include "../../third_party/rlights.h"
+#include "rlights.h"
 
 #include <memory>
 #include <algorithm>
